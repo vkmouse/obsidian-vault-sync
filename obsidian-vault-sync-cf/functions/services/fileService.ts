@@ -47,13 +47,22 @@ export async function put(db: D1Database, params: PutEntityParams): Promise<File
     return null
   }
 
+  // sync_events.payload 必須是 API-規格書第 7 節定義的 FilePayload 形狀
+  // （camelCase：contentHash / isDeleted），不能直接塞 D1 的 FileRow——
+  // 後者是 snake_case（content_hash / is_deleted），插件端用 camelCase
+  // 解析會讀到 undefined，導致 isDeleted 恆為 true，把每筆 pull 都誤判成刪除。
+  const eventPayload: FilePayload = {
+    contentHash: row.content_hash,
+    isDeleted: row.is_deleted === 1,
+  }
+
   await syncEventService.insert(db, {
     vaultId: params.vaultId,
     mutationId: params.mutationId,
     entityType: 'FILE',
     entityId: params.entityId,
     version: row.version,
-    payload: row,
+    payload: eventPayload,
   })
 
   return row
