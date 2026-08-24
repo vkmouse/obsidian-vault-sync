@@ -15,6 +15,10 @@ export const onRequest: PagesFunction<Env, any, AuthContext> = async (context) =
   const { env, request } = context
   const { pathname } = new URL(request.url)
 
+  if (SKIP_USER_RESOLUTION_PATHS.has(pathname)) {
+    return await context.next()
+  }
+
   // 缺少此 header 代表請求繞過了邊界層驗證，理論上不會發生。
   const clientId = request.headers.get('CF-Access-Client-Id')
   if (!clientId) {
@@ -28,10 +32,6 @@ export const onRequest: PagesFunction<Env, any, AuthContext> = async (context) =
   }
 
   context.data.email = email
-
-  if (SKIP_USER_RESOLUTION_PATHS.has(pathname)) {
-    return await context.next()
-  }
 
   context.data.userId = await findOrCreateUserId(env.DB, email)
 
