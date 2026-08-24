@@ -49,6 +49,7 @@ async function buildPushCommands(
 				baseVersion: item.baseVersion,
 				payload: JSON.stringify(payload),
 			});
+			console.log(`[vault-sync] DELETE  ${item.path}（mutationId=${item.mutationId}）`);
 			continue;
 		}
 
@@ -61,6 +62,9 @@ async function buildPushCommands(
 
 		const content = await vault.readBinary(file);
 		const contentHash = await sha256Hex(content);
+		console.log(
+			`[vault-sync] 上傳中 ${item.action} ${item.path}（${content.byteLength} bytes，hash=${contentHash.slice(0, 8)}…）`,
+		);
 		await uploadObject(creds, vaultId, contentHash, content);
 		const payload: FilePayload = { contentHash, isDeleted: false };
 		commands.push({
@@ -72,6 +76,7 @@ async function buildPushCommands(
 		});
 	}
 
+	console.log(`[vault-sync] 這一批內容上傳完成，共組出 ${commands.length} 筆 pushCommand`);
 	return commands;
 }
 
@@ -91,7 +96,10 @@ async function applyPullEvent(
 	if (!payload || payload.isDeleted) {
 		const file = vault.getAbstractFileByPath(path);
 		if (file instanceof TFile) {
+			console.log(`[vault-sync] pull DELETE ${path}（version=${event.version}），本地檔案已移至回收桶`);
 			await plugin.app.fileManager.trashFile(file);
+		} else {
+			console.log(`[vault-sync] pull DELETE ${path}（version=${event.version}），本地本來就沒有這個檔案`);
 		}
 		return;
 	}
@@ -99,6 +107,9 @@ async function applyPullEvent(
 	if (!payload.contentHash) {
 		throw new Error(`pullEvent（mutationId=${event.mutationId}）isDeleted=false 但缺少 contentHash`);
 	}
+	console.log(
+		`[vault-sync] 下載中 ${path}（version=${event.version}，hash=${payload.contentHash.slice(0, 8)}…）`,
+	);
 	const content = await downloadObject(creds, vaultId, payload.contentHash);
 	if (content === null) {
 		throw new Error(`contentHash ${payload.contentHash} 在伺服器端找不到（404）`);
@@ -107,6 +118,7 @@ async function applyPullEvent(
 	const existing = vault.getAbstractFileByPath(path);
 	if (existing instanceof TFile) {
 		await vault.modifyBinary(existing, content);
+		console.log(`[vault-sync] pull 完成，已覆寫既有檔案 ${path}`);
 		return;
 	}
 
@@ -117,6 +129,7 @@ async function applyPullEvent(
 		});
 	}
 	await vault.createBinary(path, content);
+	console.log(`[vault-sync] pull 完成，已新增檔案 ${path}`);
 }
 
 /**
@@ -136,6 +149,11 @@ async function applyBatchResponse(
 	// 8.4 套用 pullEvents，同時記錄這次被覆蓋到的路徑，供下面第 9.1 節決議使用。
 	const pullPaths = new Set<string>();
 	let pulled = 0;
+	if (response.pullEvents.length === 0) {
+		console.log('[vault-sync] pullEvents 是空的，沒有新的伺服器端事件');
+	} else {
+		console.log(`[vault-sync] 收到 ${response.pullEvents.length} 筆 pullEvents，套用中...`);
+	}
 	for (const event of response.pullEvents) {
 		pullPaths.add(normalizePath(event.entityId));
 		try {
@@ -171,6 +189,7 @@ async function applyBatchResponse(
 		if (result.status === 'OK') {
 			ok++;
 			removedMutationIds.add(result.mutationId);
+			console.log(`[vault-sync] OK       ${entry.path}（mutationId=${result.mutationId}）`);
 			if (entry.action === 'DELETE') {
 				delete state.fileVersions[entry.path];
 			} else {
@@ -181,8 +200,10 @@ async function applyBatchResponse(
 		} else if (result.status === 'SKIPPED') {
 			skipped++;
 			removedMutationIds.add(result.mutationId);
+			console.log(`[vault-sync] SKIPPED  ${entry.path}（mutationId=${result.mutationId}）`);
 		} else {
 			error++;
+			console.warn(`[vault-sync] ERROR    ${entry.path}（mutationId=${result.mutationId}）`);
 			if (pullPaths.has(normalizePath(entry.path))) {
 				removedMutationIds.add(result.mutationId);
 			} else {
@@ -203,12 +224,14 @@ async function applyBatchResponse(
 
 /** Client-規格書第 6～8 節：手動觸發同步的完整流程。 */
 export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
+	console.log('[vault-sync] === 開始同步 ===');
 	// 第 6 節：處理流程開始前，先強制結束所有還在計時中的 debounce。
 	plugin.queueManager.flushAll();
 
 	let vaultId: string;
 	try {
 		vaultId = await ensureVaultResolved(plugin);
+		console.log(`[vault-sync] vaultId 已解析：${vaultId}`);
 	} catch (err) {
 		if (err instanceof VaultNotConfiguredError) {
 			new Notice('Vault Sync：請先在設定畫面填入 API base URL、Access 憑證與 Vault 名稱。');
@@ -228,10 +251,18 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 	const totals = { ok: 0, skipped: 0, error: 0, pulled: 0 };
 	const allErroredPaths: string[] = [];
 
+	let batchNo = 0;
 	for (;;) {
+		batchNo++;
 		const sorted = [...state.syncQueue].sort((a, b) => a.updatedAt - b.updatedAt);
 		const batch = sorted.slice(0, BATCH_SIZE);
 		const isFullBatch = batch.length === BATCH_SIZE;
+
+		if (batch.length === 0) {
+			console.log(`[vault-sync] 第 ${batchNo} 批：佇列是空的，仍會送出請求以確認是否有新的 pullEvents`);
+		} else {
+			console.log(`[vault-sync] 第 ${batchNo} 批，共 ${batch.length} 筆待推送（單批上限 ${BATCH_SIZE}）`);
+		}
 
 		let pushCommands: PushCommand[];
 		try {
@@ -246,7 +277,13 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 
 		let response: SyncResponseBody;
 		try {
+			console.log(
+				`[vault-sync] POST /sync 送出中（lastCursor=${state.lastCursor}，pushCommands=${pushCommands.length} 筆）`,
+			);
 			response = await postSync(creds, vaultId, { lastCursor: state.lastCursor, pushCommands });
+			console.log(
+				`[vault-sync] POST /sync 收到回應（newCursor=${response.newCursor}，pushResults=${response.pushResults.length} 筆，pullEvents=${response.pullEvents.length} 筆）`,
+			);
 		} catch (err) {
 			if (err instanceof VaultForbiddenError) {
 				// 第 9.2 節決議：清空本地快取的 vaultId 綁定，強制下次走第 5 節重新解析。
@@ -272,9 +309,16 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 
 		await plugin.saveSettings();
 
+		console.log(
+			`[vault-sync] 第 ${batchNo} 批完成 — OK: ${batchResult.ok}, SKIPPED: ${batchResult.skipped}, ERROR: ${batchResult.error}, pulled: ${batchResult.pulled}`,
+		);
+
 		if (!isFullBatch) break;
 	}
 
+	console.log(
+		`[vault-sync] === 同步結束 — 共 ${batchNo} 批 — OK: ${totals.ok}, SKIPPED: ${totals.skipped}, ERROR: ${totals.error}, 拉取: ${totals.pulled} 筆 ===`,
+	);
 	const summary = `Vault Sync 完成 — 推送 OK ${totals.ok}／SKIPPED ${totals.skipped}／ERROR ${totals.error}，拉取 ${totals.pulled} 筆事件。`;
 	new Notice(summary);
 	if (allErroredPaths.length > 0) {

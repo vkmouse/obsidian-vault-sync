@@ -22,16 +22,19 @@ export async function ensureVaultResolved(plugin: VaultSyncPlugin): Promise<stri
 
 	// 第 1 步：比對 vaultName 是否等於 resolvedVaultName。
 	if (settings.vaultName === settings.resolvedVaultName && settings.resolvedVaultId) {
+		console.log(`[vault-sync] vaultId 沿用本地快取：${settings.resolvedVaultId}（name=${settings.vaultName}）`);
 		return settings.resolvedVaultId;
 	}
 
 	// 第 2 步：重新解析。
+	console.log(`[vault-sync] 本地快取的 vaultId 無效或名稱已變更，重新向伺服器解析 name=${settings.vaultName}`);
 	const creds: ApiCredentials = {
 		apiBaseUrl: settings.apiBaseUrl,
 		accessClientId: settings.accessClientId,
 		accessClientSecret: settings.accessClientSecret,
 	};
 	const result = await createOrResolveVault(creds, settings.vaultName);
+	console.log(`[vault-sync] 解析完成：vaultId=${result.vaultId}，status=${result.status}`);
 
 	settings.resolvedVaultId = result.vaultId;
 	settings.resolvedVaultName = settings.vaultName;
