@@ -31,17 +31,17 @@ export interface AuthContext extends Record<string, unknown> {
 /* 打斷前端。                                                                */
 /* -------------------------------------------------------------------------- */
 
-/** 對應 files.is_deleted / sync_events.action。 */
-export type SyncAction = 'CREATE' | 'MODIFY' | 'DELETE'
+/** 對應 sync_events.entity_type。目前僅 'FILE'，之後可擴充。 */
+export type EntityType = 'FILE'
 
 export interface PushCommand {
   mutationId: string
-  path: string
-  action: SyncAction
-  /** 這筆變更基於哪個版本做的；CREATE 固定為 0。 */
+  entityType: EntityType
+  entityId: string
+  /** 這筆變更基於哪個版本做的；新建固定為 0。 */
   baseVersion: number
-  /** CREATE/MODIFY 帶已上傳好的 hash；DELETE 不需要。 */
-  contentHash?: string
+  /** JSON 字串，內容依 entityType 而定。 */
+  payload: string
 }
 
 export type PushResultStatus = 'OK' | 'SKIPPED' | 'ERROR'
@@ -58,13 +58,13 @@ export interface SyncRequestBody {
 }
 
 /** Pull 流程回傳的單一筆伺服器端事件，對應 sync_events 一列。 */
-export interface SyncEventRow {
+export interface PullEvent {
   id: number
   mutationId: string
-  path: string
-  action: SyncAction
+  entityType: EntityType
+  entityId: string
   version: number
-  contentHash: string | null
+  payload: string | null
   createdAt: string
 }
 
@@ -73,5 +73,20 @@ export interface SyncResponseBody {
   /** 回應當下事件日誌的全域最大游標值。 */
   newCursor: number
   /** 這個 vault 裡 lastCursor 之後的新事件（已排除本次請求自己的 mutationId）。 */
-  pullEvents: SyncEventRow[]
+  pullEvents: PullEvent[]
 }
+
+/**
+ * vaultId 不放進 payload：files 的擁有權是複合 PK 的一部分，而
+ * sync.ts 已經從路由參數驗證過歸屬權，不需要也不該讓它變成使用者可控欄位。
+ */
+export interface PutEntityParams {
+  vaultId: string
+  entityId: string
+  baseVersion: number
+  mutationId: string
+  payloadJson: string
+}
+
+/** 回傳 null 代表這次寫入視為 ERROR；非 null 代表寫入成功且已寫好 sync_events。 */
+export type PutEntityHandler = (db: D1Database, params: PutEntityParams) => Promise<unknown | null>

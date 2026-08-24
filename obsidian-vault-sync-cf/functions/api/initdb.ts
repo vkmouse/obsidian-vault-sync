@@ -41,17 +41,19 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         CHECK (content_hash IS NULL OR length(content_hash) = 64)
       )
     `),
+    // 改成完全通用的事件日誌（不再認識 files 表的欄位語意），是 breaking
+    // schema change；目前沒有正式資料，直接 DROP 再重建，不需要 migration。
+    DB.prepare(`DROP TABLE IF EXISTS sync_events`),
     DB.prepare(`
       CREATE TABLE IF NOT EXISTS sync_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        vault_id TEXT NOT NULL,
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        vault_id    TEXT NOT NULL,
         mutation_id TEXT UNIQUE NOT NULL,
-        path TEXT NOT NULL,
-        action TEXT NOT NULL,
-        version INTEGER NOT NULL,
-        content_hash TEXT,
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        CHECK (content_hash IS NULL OR length(content_hash) = 64)
+        entity_type TEXT NOT NULL,
+        entity_id   TEXT NOT NULL,
+        payload     TEXT,
+        version     INTEGER NOT NULL,
+        created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       )
     `),
     DB.prepare(`

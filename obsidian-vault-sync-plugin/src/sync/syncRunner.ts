@@ -9,7 +9,7 @@ import {
 	type ApiCredentials,
 } from './api';
 import { sha256Hex } from './hash';
-import type { PullEvent, PushCommand, SyncQueueItem, SyncResponseBody } from '../types';
+import type { FilePayload, PullEvent, PushCommand, SyncQueueItem, SyncResponseBody } from '../types';
 
 /** Client-規格書第 8.2 節：每批最多取佇列裡最舊的 50 筆。 */
 const BATCH_SIZE = 50;
@@ -41,11 +41,13 @@ async function buildPushCommands(
 
 	for (const item of batch) {
 		if (item.action === 'DELETE') {
+			const payload: FilePayload = { contentHash: null, isDeleted: true };
 			commands.push({
 				mutationId: item.mutationId,
-				path: item.path,
-				action: item.action,
+				entityType: 'FILE',
+				entityId: item.path,
 				baseVersion: item.baseVersion,
+				payload: JSON.stringify(payload),
 			});
 			continue;
 		}
@@ -60,12 +62,13 @@ async function buildPushCommands(
 		const content = await vault.readBinary(file);
 		const contentHash = await sha256Hex(content);
 		await uploadObject(creds, vaultId, contentHash, content);
+		const payload: FilePayload = { contentHash, isDeleted: false };
 		commands.push({
 			mutationId: item.mutationId,
-			path: item.path,
-			action: item.action,
+			entityType: 'FILE',
+			entityId: item.path,
 			baseVersion: item.baseVersion,
-			contentHash,
+			payload: JSON.stringify(payload),
 		});
 	}
 
@@ -80,9 +83,12 @@ async function applyPullEvent(
 	event: PullEvent,
 ): Promise<void> {
 	const { vault } = plugin.app;
-	const path = normalizePath(event.path);
+	const path = normalizePath(event.entityId);
 
-	if (event.action === 'DELETE') {
+	// payload === null 視同刪除（防呆）；entityType='FILE' 理論上不會是 null。
+	const payload: FilePayload | null = event.payload ? (JSON.parse(event.payload) as FilePayload) : null;
+
+	if (!payload || payload.isDeleted) {
 		const file = vault.getAbstractFileByPath(path);
 		if (file instanceof TFile) {
 			await plugin.app.fileManager.trashFile(file);
@@ -90,12 +96,12 @@ async function applyPullEvent(
 		return;
 	}
 
-	if (!event.contentHash) {
-		throw new Error(`pullEvent（mutationId=${event.mutationId}）action=${event.action} 但缺少 contentHash`);
+	if (!payload.contentHash) {
+		throw new Error(`pullEvent（mutationId=${event.mutationId}）isDeleted=false 但缺少 contentHash`);
 	}
-	const content = await downloadObject(creds, vaultId, event.contentHash);
+	const content = await downloadObject(creds, vaultId, payload.contentHash);
 	if (content === null) {
-		throw new Error(`contentHash ${event.contentHash} 在伺服器端找不到（404）`);
+		throw new Error(`contentHash ${payload.contentHash} 在伺服器端找不到（404）`);
 	}
 
 	const existing = vault.getAbstractFileByPath(path);
@@ -131,17 +137,18 @@ async function applyBatchResponse(
 	const pullPaths = new Set<string>();
 	let pulled = 0;
 	for (const event of response.pullEvents) {
-		pullPaths.add(normalizePath(event.path));
+		pullPaths.add(normalizePath(event.entityId));
 		try {
 			await applyPullEvent(plugin, creds, vaultId, event);
-			if (event.action === 'DELETE') {
-				delete state.fileVersions[event.path];
+			const payload = event.payload ? (JSON.parse(event.payload) as { isDeleted: boolean }) : null;
+			if (!payload || payload.isDeleted) {
+				delete state.fileVersions[event.entityId];
 			} else {
-				state.fileVersions[event.path] = event.version;
+				state.fileVersions[event.entityId] = event.version;
 			}
 			pulled++;
 		} catch (err) {
-			console.error(`[vault-sync] 套用 pullEvent 失敗（path=${event.path}）`, err);
+			console.error(`[vault-sync] 套用 pullEvent 失敗（path=${event.entityId}）`, err);
 		}
 	}
 

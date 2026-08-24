@@ -1,5 +1,6 @@
 // 對應 Client-規格書第 1、2 節的本地儲存結構，以及第 7 節的 API request/response 形狀。
 
+/** 本地佇列合併規則用的概念；不是 wire 協定的一部分。 */
 export type SyncAction = 'CREATE' | 'MODIFY' | 'DELETE';
 
 /** 本地待推送佇列的一列，見 Client-規格書第 2 節。 */
@@ -60,12 +61,21 @@ export interface UploadObjectResponse {
 	status: 'CREATED' | 'ALREADY_EXISTS';
 }
 
+/** 對應後端 sync_events.entity_type。目前僅 'FILE'。 */
+export type EntityType = 'FILE';
+
+export interface FilePayload {
+	contentHash: string | null;
+	isDeleted: boolean;
+}
+
 export interface PushCommand {
 	mutationId: string;
-	path: string;
-	action: SyncAction;
+	entityType: EntityType;
+	entityId: string;
 	baseVersion: number;
-	contentHash?: string;
+	/** JSON.stringify(FilePayload)。 */
+	payload: string;
 }
 
 export interface PushResult {
@@ -76,10 +86,11 @@ export interface PushResult {
 export interface PullEvent {
 	id: number;
 	mutationId: string;
-	path: string;
-	action: SyncAction;
+	entityType: EntityType;
+	entityId: string;
 	version: number;
-	contentHash: string | null;
+	/** entityType='FILE' 時可解析成 FilePayload；null 視同刪除。 */
+	payload: string | null;
 	createdAt: string;
 }
 

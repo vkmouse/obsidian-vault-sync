@@ -1,4 +1,4 @@
-import type { PushCommand } from '../types'
+import type { EntityType, PushCommand } from '../types'
 
 /**
  * 驗證 vault 名稱：1–100 字元，不限制字元種類（中文、emoji、符號皆可）。
@@ -15,13 +15,11 @@ export function validateVaultName(name: unknown): string | null {
   return name
 }
 
-const SYNC_ACTIONS = new Set(['CREATE', 'MODIFY', 'DELETE'])
+const ENTITY_TYPES = new Set<EntityType>(['FILE'])
 
-/** SHA-256 hex，固定 64 個小寫十六進位字元。 */
-const CONTENT_HASH_RE = /^[0-9a-f]{64}$/
-
-/** 形狀不合法就回傳 null，讓呼叫端直接判 ERROR，不繼續往下做版本檢查。 */
-export function validatePushCommand(command: unknown): PushCommand | null {
+/** 只驗證外殼欄位；payload 內部形狀留給對應 entityType 的 Service 驗證。
+ *  形狀不合法回傳 null（而非拋例外），讓呼叫端直接判 ERROR。 */
+export function validateCommandShape(command: unknown): PushCommand | null {
   if (typeof command !== 'object' || command === null) {
     return null
   }
@@ -30,35 +28,60 @@ export function validatePushCommand(command: unknown): PushCommand | null {
   if (typeof c.mutationId !== 'string' || c.mutationId.length === 0) {
     return null
   }
-  if (typeof c.path !== 'string' || c.path.length === 0) {
+  if (typeof c.entityType !== 'string' || !ENTITY_TYPES.has(c.entityType as EntityType)) {
     return null
   }
-  if (typeof c.action !== 'string' || !SYNC_ACTIONS.has(c.action)) {
+  if (typeof c.entityId !== 'string' || c.entityId.length === 0) {
     return null
   }
   if (typeof c.baseVersion !== 'number' || !Number.isInteger(c.baseVersion) || c.baseVersion < 0) {
     return null
   }
-
-  // DELETE 不需要 contentHash，但沒有明確禁止帶——寬鬆接受，反正不會被用到。
-  let contentHash: string | undefined
-  if (c.contentHash !== undefined) {
-    if (typeof c.contentHash !== 'string' || !CONTENT_HASH_RE.test(c.contentHash)) {
-      return null
-    }
-    contentHash = c.contentHash
-  }
-  if ((c.action === 'CREATE' || c.action === 'MODIFY') && !contentHash) {
+  if (typeof c.payload !== 'string' || c.payload.length === 0) {
     return null
   }
 
   return {
     mutationId: c.mutationId,
-    path: c.path,
-    action: c.action as PushCommand['action'],
+    entityType: c.entityType as EntityType,
+    entityId: c.entityId,
     baseVersion: c.baseVersion,
-    contentHash,
+    payload: c.payload,
   }
+}
+
+export function isStringOrNull(value: unknown): value is string | null {
+  return value === null || value === undefined || typeof value === 'string'
+}
+
+export function isBoolean(value: unknown): value is boolean {
+  return typeof value === 'boolean'
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export class PayloadValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PayloadValidationError'
+  }
+}
+
+export function parsePayloadJson(payloadJson: string): Record<string, unknown> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(payloadJson)
+  } catch {
+    throw new PayloadValidationError('payload 不是合法的 JSON 字串')
+  }
+
+  if (!isPlainObject(parsed)) {
+    throw new PayloadValidationError('payload 必須是一個 JSON 物件')
+  }
+
+  return parsed
 }
 
 /** 即使形狀驗證失敗，也盡量把 mutationId 撈出來，讓 pushResults 能對得上原始陣列位置。 */
