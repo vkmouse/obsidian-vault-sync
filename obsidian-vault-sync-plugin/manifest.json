@@ -1,0 +1,9 @@
+{
+	"id": "obsidian-vault-sync",
+	"name": "Vault Sync",
+	"version": "0.1.0",
+	"minAppVersion": "1.6.6",
+	"description": "手動觸發、以 Cloudflare 為後端的 vault 同步 plugin。",
+	"author": "",
+	"isDesktopOnly": false
+}

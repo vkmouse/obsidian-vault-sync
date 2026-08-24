@@ -1,0 +1,63 @@
+/**
+ * 建立系統所需的資料表。全部使用 `CREATE TABLE IF NOT EXISTS`，
+ * 讓這支端點可以重複呼叫而不出錯，方便部署或環境初始化時直接呼叫,
+ * 不用先確認表是否已存在。
+ */
+import type { Env } from '../types'
+
+export const onRequest: PagesFunction<Env> = async (context) => {
+  if (context.request.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 })
+  }
+
+  const { DB } = context.env
+
+  await DB.batch([
+    DB.prepare(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `),
+    DB.prepare(`
+      CREATE TABLE IF NOT EXISTS vaults (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (user_id, name)
+      )
+    `),
+    DB.prepare(`
+      CREATE TABLE IF NOT EXISTS files (
+        vault_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (vault_id, path),
+        CHECK (content_hash IS NULL OR length(content_hash) = 64)
+      )
+    `),
+    DB.prepare(`
+      CREATE TABLE IF NOT EXISTS sync_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vault_id TEXT NOT NULL,
+        mutation_id TEXT UNIQUE NOT NULL,
+        path TEXT NOT NULL,
+        action TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (content_hash IS NULL OR length(content_hash) = 64)
+      )
+    `),
+    DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_sync_events_vault_id ON sync_events (vault_id, id)
+    `),
+  ])
+
+  return Response.json({ status: 'OK' })
+}
