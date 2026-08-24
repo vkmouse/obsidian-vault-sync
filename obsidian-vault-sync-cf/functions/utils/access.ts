@@ -175,4 +175,18 @@ export function resolveEmailByCommonName(
   commonName: string,
 ): string | null {
   if (!serviceIdentityMap) {
-    console.error([auth]
+    console.error('[auth] 缺少環境變數 SERVICE_IDENTITY_MAP')
+    return null
+  }
+
+  let identityMap: Record<string, unknown>
+  try {
+    identityMap = JSON.parse(serviceIdentityMap) as Record<string, unknown>
+  } catch {
+    console.error('[auth] SERVICE_IDENTITY_MAP 不是合法 JSON')
+    return null
+  }
+
+  const email = identityMap[commonName]
+  return typeof email === 'string' && email ? email : null
+}
