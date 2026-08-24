@@ -37,3 +37,12 @@ export async function findByUserAndName(
     .bind(userId, name)
     .first<Pick<VaultRow, 'id'>>()
 }
+
+/** 只查 user_id，讓呼叫端自行決定「查無此列」和「user_id 不符」要如何處理。 */
+export async function findUserIdById(db: D1Database, vaultId: string): Promise<string | null> {
+  const row = await db
+    .prepare(`SELECT user_id FROM vaults WHERE id = ?`)
+    .bind(vaultId)
+    .first<{ user_id: string }>()
+  return row ? row.user_id : null
+}
