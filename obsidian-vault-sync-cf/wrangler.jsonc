@@ -32,14 +32,13 @@
 		}
 	],
 	/**
-	 * CF-Access-Client-Id -> email 對照表（JSON 字串），詳見
-	 * functions/api/_middleware.ts、functions/utils/serviceTokenMap.ts。
-	 * 不是 secret，用 vars 即可；正式值由 Cloudflare 後台設定或用
-	 * `wrangler pages deployment` 環境變數頁面覆蓋，這裡的值僅供本地
-	 * `wrangler pages dev` 開發使用，請自行填入你自己的 Client Id / email。
+	 * Cloudflare Access JWT 驗證設定。正式值可由 Cloudflare 後台環境變數覆蓋；
+	 * SERVICE_IDENTITY_MAP 為 common_name -> email 的 JSON 對照表。
 	 */
 	"vars": {
-		"SERVICE_TOKEN_MAP": "{}"
+		"ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
+		"ACCESS_AUD": "",
+		"SERVICE_IDENTITY_MAP": "{}"
 	}
 	/**
 	 * Smart Placement
