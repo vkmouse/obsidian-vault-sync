@@ -1,4 +1,4 @@
-import type { VaultLocalState } from '../types';
+import type { PluginData } from '../types';
 
 /** 同一個 path 在這段時間內沒有再變動才進入合併，避免頻繁編輯時每次都觸發合併。 */
 export const DEBOUNCE_MS = 1500;
@@ -6,7 +6,7 @@ export const DEBOUNCE_MS = 1500;
 export type RawEventKind = 'create' | 'modify' | 'delete';
 
 /**
- * 把一個新事件合併進 state.syncQueue。
+ * 把一個新事件合併進 settings.syncQueue。
  *
  * baseVersion 只在第一次進佇列時決定，之後不再重新計算——佇列項目還沒送
  * 出去之前，fileVersions 不會變動。
@@ -15,12 +15,12 @@ export type RawEventKind = 'create' | 'modify' | 'delete';
  * 換來合併邏輯簡單，代價是這類檔案會多打一次 API、留一筆可接受的刪除記錄。
  */
 export function mergeQueueItem(
-	state: VaultLocalState,
+	settings: PluginData,
 	vaultId: string,
 	path: string,
 	kind: RawEventKind,
 ): void {
-	const queue = state.syncQueue;
+	const queue = settings.syncQueue;
 	// 一併比對 entityType='FILE'：VAULT command 的 entityId 是 vault 名稱，
 	// 萬一剛好跟某個檔案路徑撞字面值，不比對 entityType 會誤把 VAULT 那筆
 	// 佇列項目當成同一個檔案來合併、覆寫掉它的 payload。
@@ -28,7 +28,7 @@ export function mergeQueueItem(
 	const isDeleted = kind === 'delete';
 
 	if (idx === -1) {
-		const knownVersion = state.fileVersions[path] ?? 0;
+		const knownVersion = settings.fileVersions[path] ?? 0;
 		queue.push({
 			entityType: 'FILE',
 			vaultId,
@@ -54,11 +54,11 @@ export function mergeQueueItem(
  * FILE command 之前——後端依陣列順序處理，VAULT 沒排最前面的話，FILE
  * command 會因為 vaultId 還沒建立而被判 ERROR。
  */
-export function enqueueVaultCreate(state: VaultLocalState, vaultId: string, name: string): void {
-	const alreadyQueued = state.syncQueue.some((item) => item.entityType === 'VAULT');
+export function enqueueVaultCreate(settings: PluginData, vaultId: string, name: string): void {
+	const alreadyQueued = settings.syncQueue.some((item) => item.entityType === 'VAULT');
 	if (alreadyQueued) return;
 
-	state.syncQueue.unshift({
+	settings.syncQueue.unshift({
 		entityType: 'VAULT',
 		vaultId,
 		entityId: name,
@@ -70,7 +70,7 @@ export function enqueueVaultCreate(state: VaultLocalState, vaultId: string, name
 
 interface QueueTarget {
 	/** 事件發生當下應該寫入哪個 vault 的佇列；尚未解析過 vaultId 時回傳 null。 */
-	getVaultState(): { vaultId: string; state: VaultLocalState } | null;
+	getVaultState(): { vaultId: string; settings: PluginData } | null;
 	onQueueChanged(): void;
 }
 
@@ -133,7 +133,7 @@ export class SyncQueueManager {
 	private commit(path: string, kind: RawEventKind): void {
 		const target = this.target.getVaultState();
 		if (!target) return;
-		mergeQueueItem(target.state, target.vaultId, path, kind);
+		mergeQueueItem(target.settings, target.vaultId, path, kind);
 		this.target.onQueueChanged();
 	}
 }

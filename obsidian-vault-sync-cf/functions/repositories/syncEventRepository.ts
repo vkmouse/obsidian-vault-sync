@@ -95,6 +95,41 @@ export async function pullEvents(
   return result.results.map(toPullEvent)
 }
 
+/**
+ * 「加入既有 vault」流程專用：忽略這台裝置的全域 lastCursor，直接把指定
+ * vaultId 的完整歷史（從第一筆事件開始）撈出來。原因是 lastCursor 是這台
+ * 裝置跨所有 vault 的全域游標，跟這個「剛加入、本地從沒同步過」的 vaultId
+ * 完全無關——正常的增量 pull（se.id > lastCursor）會直接跳過它 id 比較小
+ * 的歷史事件，永遠補不回來。
+ */
+export async function pullEventsForVaultIds(
+  db: D1Database,
+  vaultIds: string[],
+  excludeMutationIds: string[],
+): Promise<PullEvent[]> {
+  if (vaultIds.length === 0) {
+    return []
+  }
+
+  const vaultPlaceholders = vaultIds.map(() => '?').join(', ')
+  const excludeClause =
+    excludeMutationIds.length > 0
+      ? `AND mutation_id NOT IN (${excludeMutationIds.map(() => '?').join(', ')})`
+      : ''
+
+  const result = await db
+    .prepare(
+      `SELECT * FROM sync_events
+       WHERE vault_id IN (${vaultPlaceholders})
+         ${excludeClause}
+       ORDER BY id ASC`,
+    )
+    .bind(...vaultIds, ...excludeMutationIds)
+    .all<SyncEventDbRow>()
+
+  return result.results.map(toPullEvent)
+}
+
 export async function getMaxCursor(db: D1Database): Promise<number> {
   const row = await db
     .prepare(`SELECT MAX(id) AS new_cursor FROM sync_events`)

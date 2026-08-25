@@ -21,6 +21,15 @@ export async function getMaxCursor(db: D1Database): Promise<number> {
   return syncEventRepository.getMaxCursor(db)
 }
 
+/** 見 syncEventRepository.pullEventsForVaultIds 的說明：加入既有 vault 時的全歷史補課用。 */
+export async function pullEventsForVaultIds(
+  db: D1Database,
+  vaultIds: string[],
+  excludeMutationIds: string[],
+): Promise<PullEvent[]> {
+  return syncEventRepository.pullEventsForVaultIds(db, vaultIds, excludeMutationIds)
+}
+
 export interface RecordEventInput {
   vaultId: string
   mutationId: string

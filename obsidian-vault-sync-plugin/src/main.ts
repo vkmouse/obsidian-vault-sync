@@ -2,7 +2,7 @@ import { Plugin, TAbstractFile, TFile } from 'obsidian';
 import { DEFAULT_SETTINGS, VaultSyncSettingTab } from './settings';
 import { SyncQueueManager } from './sync/queue';
 import { runSync } from './sync/syncRunner';
-import { createEmptyVaultLocalState, type PluginData, type VaultLocalState } from './types';
+import type { PluginData } from './types';
 
 export default class VaultSyncPlugin extends Plugin {
 	settings!: PluginData;
@@ -14,7 +14,7 @@ export default class VaultSyncPlugin extends Plugin {
 		this.queueManager = new SyncQueueManager({
 			getVaultState: () => {
 				const vaultId = this.settings.resolvedVaultId;
-				return vaultId ? { vaultId, state: this.getOrCreateVaultState(vaultId) } : null;
+				return vaultId ? { vaultId, settings: this.settings } : null;
 			},
 			onQueueChanged: () => {
 				void this.saveSettings();
@@ -73,17 +73,16 @@ export default class VaultSyncPlugin extends Plugin {
 		);
 	}
 
-	getOrCreateVaultState(vaultId: string): VaultLocalState {
-		let state = this.settings.vaults[vaultId];
-		if (!state) {
-			state = createEmptyVaultLocalState();
-			this.settings.vaults[vaultId] = state;
-		}
-		return state;
-	}
-
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<PluginData>);
+		// 舊版 data.json 用的欄位是 globalSyncCursor，改名成 lastCursor 之後型別上
+		// 已經不存在這個欄位，若不遷移，Object.assign 會判定成「沒有 lastCursor」，
+		// 直接用 DEFAULT_SETTINGS.lastCursor=0 覆蓋掉，讓使用者升級後從頭重拉一次
+		// 全部歷史事件（雖然冪等、不算資料遺失，但體感是整個帳號重新同步一次）。
+		const raw = (await this.loadData()) as (Partial<PluginData> & { globalSyncCursor?: number }) | null;
+		if (raw && raw.lastCursor === undefined && typeof raw.globalSyncCursor === 'number') {
+			raw.lastCursor = raw.globalSyncCursor;
+		}
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, raw);
 	}
 
 	async saveSettings() {

@@ -151,7 +151,7 @@ async function applyBatchResponse(
 	erroredPaths: string[];
 	vaultCreateFailed: boolean;
 }> {
-	const state = plugin.getOrCreateVaultState(vaultId);
+	const state = plugin.settings;
 	const mutationMap = new Map(batch.map((item) => [item.mutationId, item]));
 
 	// 記錄本次被 pull 覆蓋到的路徑，供下面判斷 ERROR 要不要保留使用。
@@ -187,7 +187,7 @@ async function applyBatchResponse(
 
 	// cursor 是使用者層級的，即使這批 pullEvents 大多不屬於這個 vault，還是
 	// 整批往前推進，下次同步才不會重複掃到已經看過、但跟自己無關的事件。
-	plugin.settings.globalSyncCursor = response.newCursor;
+	plugin.settings.lastCursor = response.newCursor;
 
 	// OK/SKIPPED 移除該列；ERROR 但路徑剛好被本次 pull 覆蓋掉的話，代表本地已經
 	// 被伺服器版本蓋過，一併清除；其餘 ERROR 留在佇列裡等下次同步重試。
@@ -208,17 +208,25 @@ async function applyBatchResponse(
 				error++;
 				vaultCreateFailed = true;
 				console.warn(`[vault-sync] ERROR    VAULT ${entry.entityId}（mutationId=${result.mutationId}）`);
-				// 撞名不自動重試：清掉快取，等使用者手動改名字，下次同步才會
-				// 重新產生候選 UUID。
+				// 注意：撞到自己另一台裝置的既有 vault 現在不會走到這個分支（後端
+				// 已經把「撞名＝加入」處理成 OK 並回 resolvedVaultId，見下方 else
+				// 分支）。會走到這裡的只剩下名稱本身不合法之類的真正失敗，不自動
+				// 重試：清掉快取，等使用者手動修正名字，下次同步才會重新產生候選 UUID。
 				plugin.settings.resolvedVaultId = null;
 				plugin.settings.resolvedVaultName = null;
-				new Notice(`Vault Sync：vault 名稱「${entry.entityId}」已被使用，請改個名字後再同步一次。`);
+				new Notice(`Vault Sync：建立 vault「${entry.entityId}」失敗，請確認名稱後再同步一次。`);
 			} else if (result.status === 'SKIPPED') {
 				skipped++;
 				console.log(`[vault-sync] SKIPPED  VAULT ${entry.entityId}（mutationId=${result.mutationId}）`);
 			} else {
 				ok++;
-				console.log(`[vault-sync] OK       VAULT ${entry.entityId}（mutationId=${result.mutationId}）`);
+				if (result.resolvedVaultId && result.resolvedVaultId !== entry.vaultId) {
+					console.log(
+						`[vault-sync] OK       VAULT ${entry.entityId}（撞到自己既有 vault，加入為 ${result.resolvedVaultId}，取代候選 ${entry.vaultId}）`,
+					);
+				} else {
+					console.log(`[vault-sync] OK       VAULT ${entry.entityId}（mutationId=${result.mutationId}）`);
+				}
 			}
 			continue;
 		}
@@ -275,7 +283,7 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 		return;
 	}
 
-	const state = plugin.getOrCreateVaultState(vaultId);
+	const state = plugin.settings;
 	const creds: ApiCredentials = {
 		apiBaseUrl: plugin.settings.apiBaseUrl,
 		accessClientId: plugin.settings.accessClientId,
@@ -313,9 +321,9 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 		let response: SyncResponseBody;
 		try {
 			console.log(
-				`[vault-sync] POST /sync 送出中（lastCursor=${plugin.settings.globalSyncCursor}，pushCommands=${pushCommands.length} 筆）`,
+				`[vault-sync] POST /sync 送出中（lastCursor=${plugin.settings.lastCursor}，pushCommands=${pushCommands.length} 筆）`,
 			);
-			response = await postSync(creds, { lastCursor: plugin.settings.globalSyncCursor, pushCommands });
+			response = await postSync(creds, { lastCursor: plugin.settings.lastCursor, pushCommands });
 			console.log(
 				`[vault-sync] POST /sync 收到回應（newCursor=${response.newCursor}，pushResults=${response.pushResults.length} 筆，pullEvents=${response.pullEvents.length} 筆）`,
 			);
@@ -325,6 +333,23 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 			);
 			await plugin.saveSettings();
 			return;
+		}
+
+		// 撞到自己另一台裝置既有的 vault：後端會把這批 VAULT command 判成 OK，
+		// 並在 resolvedVaultId 帶回真正的 vaultId（跟這台裝置送出去的候選 UUID
+		// 不同）。要在套用這批 response（尤其是 pullEvents 的 vaultId 過濾、下一批
+		// 的上傳/下載路徑）之前就完成切換，否則後續全部會繼續對著錯的候選 id 動作。
+		const joinResult = response.pushResults.find(
+			(r) => r.resolvedVaultId && r.resolvedVaultId !== vaultId,
+		);
+		if (joinResult?.resolvedVaultId) {
+			const realVaultId = joinResult.resolvedVaultId;
+			console.log(`[vault-sync] 偵測到加入既有 vault：候選 ${vaultId} → 實際 ${realVaultId}`);
+			for (const item of state.syncQueue) {
+				if (item.vaultId === vaultId) item.vaultId = realVaultId;
+			}
+			plugin.settings.resolvedVaultId = realVaultId;
+			vaultId = realVaultId;
 		}
 
 		const batchResult = await applyBatchResponse(plugin, creds, vaultId, batch, response);

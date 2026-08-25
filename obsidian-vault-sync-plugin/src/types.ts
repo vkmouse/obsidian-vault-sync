@@ -31,17 +31,6 @@ export type SyncQueueItem =
 			payload: Record<string, never>;
 	  };
 
-/**
- * 每個 vaultId 各自獨立保存的本地狀態。
- *
- * fileVersions 記錄每個路徑目前已知的版本號，供下次要送出 MODIFY/DELETE 時
- * 當作 baseVersion；沒有記錄的路徑視為版本 0，交給伺服器的版本檢查擋掉。
- */
-export interface VaultLocalState {
-	syncQueue: SyncQueueItem[];
-	fileVersions: Record<string, number>;
-}
-
 /** 序列化進 Obsidian 的 data.json，是整個 plugin 唯一持久化的狀態。 */
 export interface PluginData {
 	accessClientId: string;
@@ -51,13 +40,15 @@ export interface PluginData {
 	vaultName: string;
 	resolvedVaultId: string | null;
 	resolvedVaultName: string | null;
-	/** 使用者層級的全域同步游標，不再屬於某個 vaultId。 */
-	globalSyncCursor: number;
-	vaults: Record<string, VaultLocalState>;
-}
-
-export function createEmptyVaultLocalState(): VaultLocalState {
-	return { syncQueue: [], fileVersions: {} };
+	/** 使用者層級的全域同步游標，不再屬於某個 vaultId。命名對齊 API body 的 lastCursor 欄位。 */
+	lastCursor: number;
+	/** 這台裝置一次只綁定一個 resolvedVaultId，佇列不用再用 vaultId 分桶。 */
+	syncQueue: SyncQueueItem[];
+	/**
+	 * 每個路徑目前已知的版本號，供下次要送出 MODIFY/DELETE 時當作
+	 * baseVersion；沒有記錄的路徑視為版本 0，交給伺服器的版本檢查擋掉。
+	 */
+	fileVersions: Record<string, number>;
 }
 
 export interface UploadObjectResponse {
@@ -86,6 +77,12 @@ export interface PushCommand {
 export interface PushResult {
 	mutationId: string;
 	status: 'OK' | 'SKIPPED' | 'ERROR';
+	/**
+	 * entityType='VAULT' 且撞名（其實是同帳號另一台裝置已建立的既有 vault）時才會帶這個欄位，
+	 * 值是伺服器上真正的 vaultId（跟這台裝置送出去的候選 UUID 不同）。runSync 收到後要把
+	 * settings.resolvedVaultId 與佇列裡引用候選 id 的項目一併改寫成這個值。
+	 */
+	resolvedVaultId?: string;
 }
 
 export interface PullEvent {

@@ -99,6 +99,14 @@ export const onRequestPost: PagesFunction<Env, any, AuthContext> = async (contex
 
   const pushResults: PushResult[] = []
 
+  // 「加入既有 vault」時，client 送來的候選 UUID 要導向伺服器上真正的
+  // vaultId：這批次裡任何引用候選 id 的 FILE command 都要改寫成真正 id 才能
+  // 正確寫入／檢查歸屬；真正 id 也要標成 writable，因為它不在原本
+  // referencedVaultIds（候選 id）算出來的 vaultWritable 裡。joinedVaultIds
+  // 則供最後的全歷史補課 pull 使用。
+  const vaultIdRemap = new Map<string, string>()
+  const joinedVaultIds = new Set<string>()
+
   for (const entry of validated) {
     if (!entry.ok) {
       pushResults.push(entry.result)
@@ -117,22 +125,34 @@ export const onRequestPost: PagesFunction<Env, any, AuthContext> = async (contex
         pushResults.push({ mutationId: command.mutationId, status: 'ERROR' })
         continue
       }
-      const row = await vaultService.put(DB, userId, command)
-      if (row) {
-        vaultWritable.set(command.vaultId, true)
+      const result = await vaultService.put(DB, userId, command)
+      if (result.status === 'invalid') {
+        pushResults.push({ mutationId: command.mutationId, status: 'ERROR' })
+        continue
       }
-      pushResults.push({ mutationId: command.mutationId, status: row ? 'OK' : 'ERROR' })
+      if (result.status === 'created') {
+        vaultWritable.set(command.vaultId, true)
+        pushResults.push({ mutationId: command.mutationId, status: 'OK' })
+        continue
+      }
+      // result.status === 'joined'
+      vaultIdRemap.set(command.vaultId, result.row.id)
+      vaultWritable.set(result.row.id, true)
+      joinedVaultIds.add(result.row.id)
+      pushResults.push({ mutationId: command.mutationId, status: 'OK', resolvedVaultId: result.row.id })
       continue
     }
 
-    // entityType === 'FILE'：只看這批次算出來的 vaultWritable，不用再查一次 DB。
-    if (!vaultWritable.get(command.vaultId)) {
+    // entityType === 'FILE'：候選 vaultId 若已被上面的 VAULT command 判定為
+    // 「加入」，導向真正的 vaultId 再判斷 writable、再寫入。
+    const effectiveVaultId = vaultIdRemap.get(command.vaultId) ?? command.vaultId
+    if (!vaultWritable.get(effectiveVaultId)) {
       pushResults.push({ mutationId: command.mutationId, status: 'ERROR' })
       continue
     }
 
     const row = await fileService.put(DB, {
-      vaultId: command.vaultId,
+      vaultId: effectiveVaultId,
       entityId: command.entityId,
       baseVersion: command.baseVersion,
       mutationId: command.mutationId,
@@ -143,6 +163,21 @@ export const onRequestPost: PagesFunction<Env, any, AuthContext> = async (contex
 
   // 一定要等 push 全部處理完才 pull，才能把這次 push 剛寫入的事件也涵蓋進去。
   const pullEvents = await syncEventService.pullEvents(DB, userId, body.lastCursor, requestMutationIds)
+
+  // 本次有加入既有 vault：無視 lastCursor，把該 vaultId 的完整歷史併入同一個
+  // response，跟正常增量 pull 依 id 去重、合併排序，client 端不用再另外發
+  // 一次請求就能補齊 fileVersions。
+  if (joinedVaultIds.size > 0) {
+    const backfill = await syncEventService.pullEventsForVaultIds(DB, [...joinedVaultIds], requestMutationIds)
+    const seenIds = new Set(pullEvents.map((e) => e.id))
+    for (const event of backfill) {
+      if (!seenIds.has(event.id)) {
+        pullEvents.push(event)
+        seenIds.add(event.id)
+      }
+    }
+    pullEvents.sort((a, b) => a.id - b.id)
+  }
 
   const newCursor = await syncEventService.getMaxCursor(DB)
 

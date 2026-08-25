@@ -49,6 +49,12 @@ export type PushResultStatus = 'OK' | 'SKIPPED' | 'ERROR'
 export interface PushResult {
   mutationId: string
   status: PushResultStatus
+  /**
+   * entityType='VAULT' 撞名時（其實是同帳號另一台裝置已建立的既有 vault，
+   * 見 vaultService.put 的 'joined' 分支）才會帶這個欄位：伺服器上真正的
+   * vaultId，跟 client 送出去的候選 UUID 不同。status 仍是 'OK'，不是 ERROR。
+   */
+  resolvedVaultId?: string
 }
 
 export interface SyncRequestBody {

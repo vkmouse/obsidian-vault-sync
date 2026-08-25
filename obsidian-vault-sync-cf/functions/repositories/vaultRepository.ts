@@ -28,6 +28,22 @@ export async function insert(
     .first<VaultRow>()
 }
 
+/**
+ * 依 (user_id, name) 查既有 vault。(user_id, name) 是複合唯一鍵，insert 撞名
+ * 只可能撞到同一個 userId 底下的既有列，用這個函式撈出真正的 vaultId 供
+ * 「加入既有 vault」流程使用。
+ */
+export async function findByUserAndName(
+  db: D1Database,
+  userId: string,
+  name: string,
+): Promise<VaultRow | null> {
+  return db
+    .prepare(`SELECT * FROM vaults WHERE user_id = ? AND name = ?`)
+    .bind(userId, name)
+    .first<VaultRow>()
+}
+
 /** 一次 batch 查出這批 vaultId 目前的 owner；查無此列的 vaultId 不會出現在回傳的 Map 裡。 */
 export async function findOwnersByIds(
   db: D1Database,
