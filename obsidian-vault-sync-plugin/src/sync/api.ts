@@ -1,10 +1,5 @@
 import { requestUrl } from 'obsidian';
-import type {
-	CreateVaultResponse,
-	SyncRequestBody,
-	SyncResponseBody,
-	UploadObjectResponse,
-} from '../types';
+import type { SyncRequestBody, SyncResponseBody, UploadObjectResponse } from '../types';
 
 export interface ApiCredentials {
 	apiBaseUrl: string;
@@ -12,7 +7,7 @@ export interface ApiCredentials {
 	accessClientSecret: string;
 }
 
-/** 一般性的 API 失敗（非 2xx、非下面特別處理的狀態碼）。 */
+/** 一般性的 API 失敗（非 2xx）。 */
 export class SyncApiError extends Error {
 	status: number;
 	constructor(message: string, status: number) {
@@ -22,36 +17,11 @@ export class SyncApiError extends Error {
 	}
 }
 
-/** 收到「vault 不屬於你」的 403；代表本地快取的 vaultId 已經失效。 */
-export class VaultForbiddenError extends Error {
-	constructor() {
-		super('這個 vaultId 不屬於目前的帳號');
-		this.name = 'VaultForbiddenError';
-	}
-}
-
 function authHeaders(creds: ApiCredentials): Record<string, string> {
 	return {
 		'CF-Access-Client-Id': creds.accessClientId,
 		'CF-Access-Client-Secret': creds.accessClientSecret,
 	};
-}
-
-export async function createOrResolveVault(
-	creds: ApiCredentials,
-	name: string,
-): Promise<CreateVaultResponse> {
-	const res = await requestUrl({
-		url: `${creds.apiBaseUrl}/api/vaults`,
-		method: 'POST',
-		headers: { ...authHeaders(creds), 'Content-Type': 'application/json' },
-		body: JSON.stringify({ name }),
-		throw: false,
-	});
-	if (res.status !== 200) {
-		throw new SyncApiError(`POST /api/vaults 失敗，HTTP ${res.status}`, res.status);
-	}
-	return res.json as CreateVaultResponse;
 }
 
 export async function uploadObject(
@@ -100,23 +70,20 @@ export async function downloadObject(
 	return res.arrayBuffer;
 }
 
+/** 使用者層級的全域佇列端點，不再帶 vaultId 路由參數：一次請求可橫跨多個 vault 的 command。 */
 export async function postSync(
 	creds: ApiCredentials,
-	vaultId: string,
 	body: SyncRequestBody,
 ): Promise<SyncResponseBody> {
 	const res = await requestUrl({
-		url: `${creds.apiBaseUrl}/api/vaults/${vaultId}/sync`,
+		url: `${creds.apiBaseUrl}/api/sync`,
 		method: 'POST',
 		headers: { ...authHeaders(creds), 'Content-Type': 'application/json' },
 		body: JSON.stringify(body),
 		throw: false,
 	});
-	if (res.status === 403) {
-		throw new VaultForbiddenError();
-	}
 	if (res.status !== 200) {
-		throw new SyncApiError(`POST /api/vaults/${vaultId}/sync 失敗，HTTP ${res.status}`, res.status);
+		throw new SyncApiError(`POST /api/sync 失敗，HTTP ${res.status}`, res.status);
 	}
 	return res.json as SyncResponseBody;
 }

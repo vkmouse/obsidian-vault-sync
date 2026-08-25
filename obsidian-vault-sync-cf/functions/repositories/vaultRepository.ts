@@ -6,8 +6,10 @@ export interface VaultRow {
 }
 
 /**
- * 建立 vault；`id` 由呼叫端先產生好的候選 UUID 傳入，同名 vault 已存在時
- * 不會真的寫入，回傳 `null`，交由呼叫端查詢既有記錄。
+ * 建立 vault；`id` 由呼叫端（client）先產生好的候選 UUID 傳入。同名 vault
+ * 已存在時不寫入、回傳 `null`——撞名沒有 fallback 相容邏輯，直接視為這筆
+ * VAULT command 失敗，交由呼叫端讓同批次引用同一個 vaultId 的 FILE
+ * command 一起 ERROR。
  */
 export async function insert(
   db: D1Database,
@@ -26,23 +28,23 @@ export async function insert(
     .first<VaultRow>()
 }
 
-/** 同一使用者底下 name 唯一，最多一列，`.first()` 足夠。 */
-export async function findByUserAndName(
+/**
+ * 一次 batch 查出這批 vaultId 目前的 owner，供 sync.ts 初始化
+ * vaultWritable map；查無此列的 vaultId 不會出現在回傳的 Map 裡。
+ */
+export async function findOwnersByIds(
   db: D1Database,
-  userId: string,
-  name: string,
-): Promise<Pick<VaultRow, 'id'> | null> {
-  return db
-    .prepare(`SELECT id FROM vaults WHERE user_id = ? AND name = ?`)
-    .bind(userId, name)
-    .first<Pick<VaultRow, 'id'>>()
-}
+  vaultIds: string[],
+): Promise<Map<string, string>> {
+  if (vaultIds.length === 0) {
+    return new Map()
+  }
 
-/** 只查 user_id，讓呼叫端自行決定「查無此列」和「user_id 不符」要如何處理。 */
-export async function findUserIdById(db: D1Database, vaultId: string): Promise<string | null> {
-  const row = await db
-    .prepare(`SELECT user_id FROM vaults WHERE id = ?`)
-    .bind(vaultId)
-    .first<{ user_id: string }>()
-  return row ? row.user_id : null
+  const placeholders = vaultIds.map(() => '?').join(', ')
+  const result = await db
+    .prepare(`SELECT id, user_id FROM vaults WHERE id IN (${placeholders})`)
+    .bind(...vaultIds)
+    .all<{ id: string; user_id: string }>()
+
+  return new Map(result.results.map((row) => [row.id, row.user_id]))
 }

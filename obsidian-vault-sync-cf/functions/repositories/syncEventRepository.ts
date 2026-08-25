@@ -2,6 +2,7 @@ import type { EntityType, PullEvent } from '../types'
 
 interface SyncEventDbRow {
   id: number
+  vault_id: string
   mutation_id: string
   entity_type: string
   entity_id: string
@@ -13,6 +14,7 @@ interface SyncEventDbRow {
 function toPullEvent(row: SyncEventDbRow): PullEvent {
   return {
     id: row.id,
+    vaultId: row.vault_id,
     mutationId: row.mutation_id,
     entityType: row.entity_type as EntityType,
     entityId: row.entity_id,
@@ -66,26 +68,28 @@ export async function insert(db: D1Database, input: InsertSyncEventInput): Promi
     .run()
 }
 
+/** cursor 是使用者層級的，一次撈出這個使用者名下所有 vault 的新事件，由 client 端自行過濾。 */
 export async function pullEvents(
   db: D1Database,
-  vaultId: string,
+  userId: string,
   lastCursor: number,
   excludeMutationIds: string[],
 ): Promise<PullEvent[]> {
   const excludeClause =
     excludeMutationIds.length > 0
-      ? `AND mutation_id NOT IN (${excludeMutationIds.map(() => '?').join(', ')})`
+      ? `AND se.mutation_id NOT IN (${excludeMutationIds.map(() => '?').join(', ')})`
       : ''
 
   const result = await db
     .prepare(
-      `SELECT * FROM sync_events
-       WHERE vault_id = ?
-         AND id > ?
+      `SELECT se.* FROM sync_events se
+       JOIN vaults v ON v.id = se.vault_id
+       WHERE v.user_id = ?
+         AND se.id > ?
          ${excludeClause}
-       ORDER BY id ASC`,
+       ORDER BY se.id ASC`,
     )
-    .bind(vaultId, lastCursor, ...excludeMutationIds)
+    .bind(userId, lastCursor, ...excludeMutationIds)
     .all<SyncEventDbRow>()
 
   return result.results.map(toPullEvent)

@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS: PluginData = {
 	vaultName: '',
 	resolvedVaultId: null,
 	resolvedVaultName: null,
+	globalSyncCursor: 0,
 	vaults: {},
 };
 

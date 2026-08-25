@@ -59,6 +59,11 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     DB.prepare(`
       CREATE INDEX IF NOT EXISTS idx_sync_events_vault_id ON sync_events (vault_id, id)
     `),
+    // pull 現在要 JOIN vaults 查「這個使用者名下所有 vault」，owner batch 查詢
+    // 也是用 user_id 過濾，沒有這個 index 兩者都會退化成全表掃描。
+    DB.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_vaults_user_id ON vaults (user_id)
+    `),
   ])
 
   return Response.json({ status: 'OK' })

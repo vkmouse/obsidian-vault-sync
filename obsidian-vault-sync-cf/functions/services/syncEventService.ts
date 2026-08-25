@@ -10,11 +10,11 @@ export async function findExistingMutationIds(
 
 export async function pullEvents(
   db: D1Database,
-  vaultId: string,
+  userId: string,
   lastCursor: number,
   excludeMutationIds: string[],
 ): Promise<PullEvent[]> {
-  return syncEventRepository.pullEvents(db, vaultId, lastCursor, excludeMutationIds)
+  return syncEventRepository.pullEvents(db, userId, lastCursor, excludeMutationIds)
 }
 
 export async function getMaxCursor(db: D1Database): Promise<number> {

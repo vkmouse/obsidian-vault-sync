@@ -15,7 +15,7 @@ export function validateVaultName(name: unknown): string | null {
   return name
 }
 
-const ENTITY_TYPES = new Set<EntityType>(['FILE'])
+const ENTITY_TYPES = new Set<EntityType>(['VAULT', 'FILE'])
 
 /** 只驗證外殼欄位；payload 內部形狀留給對應 entityType 的 Service 驗證。
  *  形狀不合法回傳 null（而非拋例外），讓呼叫端直接判 ERROR。 */
@@ -31,6 +31,9 @@ export function validateCommandShape(command: unknown): PushCommand | null {
   if (typeof c.entityType !== 'string' || !ENTITY_TYPES.has(c.entityType as EntityType)) {
     return null
   }
+  if (typeof c.vaultId !== 'string' || c.vaultId.length === 0) {
+    return null
+  }
   if (typeof c.entityId !== 'string' || c.entityId.length === 0) {
     return null
   }
@@ -44,6 +47,7 @@ export function validateCommandShape(command: unknown): PushCommand | null {
   return {
     mutationId: c.mutationId,
     entityType: c.entityType as EntityType,
+    vaultId: c.vaultId,
     entityId: c.entityId,
     baseVersion: c.baseVersion,
     payload: c.payload,

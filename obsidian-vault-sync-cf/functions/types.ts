@@ -24,19 +24,21 @@ export interface AuthContext extends Record<string, unknown> {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Sync API (POST /api/vaults/{vaultId}/sync) 契約型別                        */
+/* Sync API (POST /api/sync) 契約型別                                         */
 /*                                                                            */
 /* plugin 端（obsidian-vault-sync-plugin/src/types.ts）也有一份形狀相同的    */
 /* 定義，兩邊各自獨立維護、不共用同一個檔案，避免後端改內部結構時意外連動   */
 /* 打斷前端。                                                                */
 /* -------------------------------------------------------------------------- */
 
-/** 對應 sync_events.entity_type。目前僅 'FILE'，之後可擴充。 */
-export type EntityType = 'FILE'
+/** 對應 sync_events.entity_type。 */
+export type EntityType = 'VAULT' | 'FILE'
 
 export interface PushCommand {
   mutationId: string
   entityType: EntityType
+  /** VAULT：要建立的 vaultId；FILE：所屬的 vaultId。全域佇列下每筆 command 得自帶。 */
+  vaultId: string
   entityId: string
   baseVersion: number
   payload: string
@@ -50,7 +52,7 @@ export interface PushResult {
 }
 
 export interface SyncRequestBody {
-  /** 呼叫端上次同步到的游標位置，尚未同步過為 0。 */
+  /** 使用者層級的全域游標位置，尚未同步過為 0。 */
   lastCursor: number
   pushCommands: PushCommand[]
 }
@@ -58,6 +60,7 @@ export interface SyncRequestBody {
 /** Pull 流程回傳的單一筆伺服器端事件，對應 sync_events 一列。 */
 export interface PullEvent {
   id: number
+  vaultId: string
   mutationId: string
   entityType: EntityType
   entityId: string
@@ -70,13 +73,13 @@ export interface SyncResponseBody {
   pushResults: PushResult[]
   /** 回應當下事件日誌的全域最大游標值。 */
   newCursor: number
-  /** 這個 vault 裡 lastCursor 之後的新事件（已排除本次請求自己的 mutationId）。 */
+  /** 這個使用者名下所有 vault、lastCursor 之後的新事件（已排除本次請求自己的 mutationId）。 */
   pullEvents: PullEvent[]
 }
 
 /**
- * vaultId 不放進 payload：files 的擁有權是複合 PK 的一部分，而
- * sync.ts 已經從路由參數驗證過歸屬權，不需要也不該讓它變成使用者可控欄位。
+ * FILE 專用的寫入參數：vaultId 到這裡已經通過 sync.ts 的 vaultWritable
+ * 檢查，fileService 不用重新驗證歸屬權。
  */
 export interface PutEntityParams {
   vaultId: string
@@ -85,6 +88,3 @@ export interface PutEntityParams {
   mutationId: string
   payloadJson: string
 }
-
-/** 回傳 null 代表這次寫入視為 ERROR；非 null 代表寫入成功且已寫好 sync_events。 */
-export type PutEntityHandler = (db: D1Database, params: PutEntityParams) => Promise<unknown | null>

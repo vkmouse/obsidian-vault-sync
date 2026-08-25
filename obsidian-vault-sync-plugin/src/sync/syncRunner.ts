@@ -1,13 +1,7 @@
 import { Notice, TFile, normalizePath } from 'obsidian';
 import type VaultSyncPlugin from '../main';
 import { ensureVaultResolved, VaultNotConfiguredError } from './vaultResolve';
-import {
-	downloadObject,
-	postSync,
-	uploadObject,
-	VaultForbiddenError,
-	type ApiCredentials,
-} from './api';
+import { downloadObject, postSync, uploadObject, type ApiCredentials } from './api';
 import { sha256Hex } from './hash';
 import type { FilePayload, PullEvent, PushCommand, SyncQueueItem, SyncResponseBody } from '../types';
 
@@ -37,11 +31,25 @@ async function buildPushCommands(
 	const commands: PushCommand[] = [];
 
 	for (const item of batch) {
+		if (item.entityType === 'VAULT') {
+			commands.push({
+				mutationId: item.mutationId,
+				entityType: 'VAULT',
+				vaultId: item.vaultId,
+				entityId: item.entityId,
+				baseVersion: item.baseVersion,
+				payload: JSON.stringify(item.payload),
+			});
+			console.log(`[vault-sync] VAULT create  ${item.entityId}（mutationId=${item.mutationId}）`);
+			continue;
+		}
+
 		if (item.payload.isDeleted) {
 			const payload: FilePayload = { contentHash: null, isDeleted: true };
 			commands.push({
 				mutationId: item.mutationId,
 				entityType: item.entityType,
+				vaultId: item.vaultId,
 				entityId: item.entityId,
 				baseVersion: item.baseVersion,
 				payload: JSON.stringify(payload),
@@ -67,6 +75,7 @@ async function buildPushCommands(
 		commands.push({
 			mutationId: item.mutationId,
 			entityType: item.entityType,
+			vaultId: item.vaultId,
 			entityId: item.entityId,
 			baseVersion: item.baseVersion,
 			payload: JSON.stringify(payload),
@@ -134,7 +143,14 @@ async function applyBatchResponse(
 	vaultId: string,
 	batch: SyncQueueItem[],
 	response: SyncResponseBody,
-): Promise<{ ok: number; skipped: number; error: number; pulled: number; erroredPaths: string[] }> {
+): Promise<{
+	ok: number;
+	skipped: number;
+	error: number;
+	pulled: number;
+	erroredPaths: string[];
+	vaultCreateFailed: boolean;
+}> {
 	const state = plugin.getOrCreateVaultState(vaultId);
 	const mutationMap = new Map(batch.map((item) => [item.mutationId, item]));
 
@@ -147,6 +163,13 @@ async function applyBatchResponse(
 		console.log(`[vault-sync] 收到 ${response.pullEvents.length} 筆 pullEvents，套用中...`);
 	}
 	for (const event of response.pullEvents) {
+		// pull 現在是使用者層級的，會混進別的 vault 的事件、以及不代表檔案
+		// 內容變化的 VAULT 事件；用 entityId 當 key 的 pullPaths/fileVersions
+		// 只能收本次真正屬於這個 vault 的 FILE 事件，不然不同 vault 剛好同名
+		// 的路徑會互相污染彼此的版本紀錄。
+		if (event.vaultId !== vaultId || event.entityType !== 'FILE') {
+			continue;
+		}
 		pullPaths.add(normalizePath(event.entityId));
 		try {
 			await applyPullEvent(plugin, creds, vaultId, event);
@@ -162,20 +185,43 @@ async function applyBatchResponse(
 		}
 	}
 
-	// 必須等 pullEvents 全部套用完才寫回，避免中途失敗時把還沒套用的事件當作已處理。
-	state.lastCursor = response.newCursor;
+	// cursor 是使用者層級的，即使這批 pullEvents 大多不屬於這個 vault，還是
+	// 整批往前推進，下次同步才不會重複掃到已經看過、但跟自己無關的事件。
+	plugin.settings.globalSyncCursor = response.newCursor;
 
 	// OK/SKIPPED 移除該列；ERROR 但路徑剛好被本次 pull 覆蓋掉的話，代表本地已經
 	// 被伺服器版本蓋過，一併清除；其餘 ERROR 留在佇列裡等下次同步重試。
 	let ok = 0;
 	let skipped = 0;
 	let error = 0;
+	let vaultCreateFailed = false;
 	const removedMutationIds = new Set<string>();
 	const erroredPaths: string[] = [];
 
 	for (const result of response.pushResults) {
 		const entry = mutationMap.get(result.mutationId);
 		if (!entry) continue;
+
+		if (entry.entityType === 'VAULT') {
+			removedMutationIds.add(result.mutationId);
+			if (result.status === 'ERROR') {
+				error++;
+				vaultCreateFailed = true;
+				console.warn(`[vault-sync] ERROR    VAULT ${entry.entityId}（mutationId=${result.mutationId}）`);
+				// 撞名不自動重試：清掉快取，等使用者手動改名字，下次同步才會
+				// 重新產生候選 UUID。
+				plugin.settings.resolvedVaultId = null;
+				plugin.settings.resolvedVaultName = null;
+				new Notice(`Vault Sync：vault 名稱「${entry.entityId}」已被使用，請改個名字後再同步一次。`);
+			} else if (result.status === 'SKIPPED') {
+				skipped++;
+				console.log(`[vault-sync] SKIPPED  VAULT ${entry.entityId}（mutationId=${result.mutationId}）`);
+			} else {
+				ok++;
+				console.log(`[vault-sync] OK       VAULT ${entry.entityId}（mutationId=${result.mutationId}）`);
+			}
+			continue;
+		}
 
 		if (result.status === 'OK') {
 			ok++;
@@ -205,11 +251,11 @@ async function applyBatchResponse(
 	state.syncQueue = state.syncQueue.filter((item) => {
 		if (removedMutationIds.has(item.mutationId)) return false;
 		// 防呆：即使不在這一批 pushResults 裡，只要路徑被本次 pull 覆蓋就清掉殘留列。
-		if (pullPaths.has(normalizePath(item.entityId))) return false;
+		if (item.entityType === 'FILE' && pullPaths.has(normalizePath(item.entityId))) return false;
 		return true;
 	});
 
-	return { ok, skipped, error, pulled, erroredPaths };
+	return { ok, skipped, error, pulled, erroredPaths, vaultCreateFailed };
 }
 
 export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
@@ -267,25 +313,17 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 		let response: SyncResponseBody;
 		try {
 			console.log(
-				`[vault-sync] POST /sync 送出中（lastCursor=${state.lastCursor}，pushCommands=${pushCommands.length} 筆）`,
+				`[vault-sync] POST /sync 送出中（lastCursor=${plugin.settings.globalSyncCursor}，pushCommands=${pushCommands.length} 筆）`,
 			);
-			response = await postSync(creds, vaultId, { lastCursor: state.lastCursor, pushCommands });
+			response = await postSync(creds, { lastCursor: plugin.settings.globalSyncCursor, pushCommands });
 			console.log(
 				`[vault-sync] POST /sync 收到回應（newCursor=${response.newCursor}，pushResults=${response.pushResults.length} 筆，pullEvents=${response.pullEvents.length} 筆）`,
 			);
 		} catch (err) {
-			if (err instanceof VaultForbiddenError) {
-				// 清空快取的 vaultId 綁定，強制下次重新向伺服器解析。
-				plugin.settings.resolvedVaultId = null;
-				plugin.settings.resolvedVaultName = null;
-				await plugin.saveSettings();
-				new Notice('Vault Sync：這個 vault 綁定已失效，已重新綁定，請重新執行一次同步。');
-			} else {
-				new Notice(
-					`Vault Sync：同步請求失敗，已中止本次同步，佇列保留供下次重試（${describeError(err)}）。`,
-				);
-				await plugin.saveSettings();
-			}
+			new Notice(
+				`Vault Sync：同步請求失敗，已中止本次同步，佇列保留供下次重試（${describeError(err)}）。`,
+			);
+			await plugin.saveSettings();
 			return;
 		}
 
@@ -301,6 +339,10 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 		console.log(
 			`[vault-sync] 第 ${batchNo} 批完成 — OK: ${batchResult.ok}, SKIPPED: ${batchResult.skipped}, ERROR: ${batchResult.error}, pulled: ${batchResult.pulled}`,
 		);
+
+		// vault 建立本身撞名失敗時，這個 vaultId 永遠不會存在，佇列裡剩下的
+		// FILE command 全部只會繼續 ERROR，沒有必要再送更多批次浪費請求。
+		if (batchResult.vaultCreateFailed) break;
 
 		if (!isFullBatch) break;
 	}

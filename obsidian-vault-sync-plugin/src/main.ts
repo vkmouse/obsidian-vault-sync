@@ -14,7 +14,7 @@ export default class VaultSyncPlugin extends Plugin {
 		this.queueManager = new SyncQueueManager({
 			getVaultState: () => {
 				const vaultId = this.settings.resolvedVaultId;
-				return vaultId ? this.getOrCreateVaultState(vaultId) : null;
+				return vaultId ? { vaultId, state: this.getOrCreateVaultState(vaultId) } : null;
 			},
 			onQueueChanged: () => {
 				void this.saveSettings();
