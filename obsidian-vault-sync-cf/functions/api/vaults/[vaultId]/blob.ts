@@ -42,6 +42,11 @@ export const onRequestPut: PagesFunction<Env, Params, AuthContext> = async (cont
 
   const body = await context.request.arrayBuffer()
   const object = await BUCKET.put(blobKey(vaultId), body)
+  // put() 沒有帶 onlyIf 條件時實務上一定會成功，但型別上仍是 R2Object | null，
+  // 要顯式擋掉 null 分支型別檢查才會過；真的走到這裡代表 R2 寫入失敗。
+  if (!object) {
+    return new Response(null, { status: 500 })
+  }
 
   const response: UploadBlobResponseBody = { status: 'OK', uploadedAt: object.uploaded.toISOString() }
   return Response.json(response)
