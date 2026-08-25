@@ -12,6 +12,9 @@
 	},
 	"keywords": [],
 	"license": "0-BSD",
+	"dependencies": {
+		"fflate": "^0.8.3"
+	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
 		"@types/node": "^22.15.17",

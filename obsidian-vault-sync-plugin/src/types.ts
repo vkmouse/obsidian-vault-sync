@@ -1,35 +1,5 @@
-/**
- * 本地待推送佇列的一列。entityType 用 discriminated union 區分 VAULT／FILE，
- * 兩者的 payload 形狀不同，靠這個 union 在編譯期擋掉互相誤用。
- *
- * 取捨：還沒送出去的檔案被刪除時不會整列移除，而是照常標成 isDeleted=true
- * 送出去。換來合併邏輯簡化，代價是這類「建立後秒刪」的檔案會多打一次
- * API、在伺服器留一筆刪除記錄，這個成本可以接受。
- *
- * 出列順序採陣列本身順序（先進先出）：合併同一個 entityId 的後續事件是
- * in-place 更新、不會把項目搬到佇列尾端，所以本來就不需要額外時間戳來
- * 排序。VAULT command 一律用 unshift 插到最前面，確保同一批次裡一定排在
- * 引用同一個 vaultId 的 FILE command 之前——後端是依陣列順序處理的。
- */
-export type SyncQueueItem =
-	| {
-			entityType: 'FILE';
-			vaultId: string;
-			entityId: string;
-			mutationId: string;
-			baseVersion: number;
-			payload: {
-				isDeleted: boolean;
-			};
-	  }
-	| {
-			entityType: 'VAULT';
-			vaultId: string;
-			entityId: string;
-			mutationId: string;
-			baseVersion: number;
-			payload: Record<string, never>;
-	  };
+/** push 前 diff、pull 完覆寫用的「已知遠端狀態」清單：只存路徑，不存內容。 */
+export type VaultManifest = string[];
 
 /** 序列化進 Obsidian 的 data.json，是整個 plugin 唯一持久化的狀態。 */
 export interface PluginData {
@@ -40,70 +10,7 @@ export interface PluginData {
 	vaultName: string;
 	resolvedVaultId: string | null;
 	resolvedVaultName: string | null;
-	/** 使用者層級的全域同步游標，不再屬於某個 vaultId。命名對齊 API body 的 lastCursor 欄位。 */
-	lastCursor: number;
-	/** 這台裝置一次只綁定一個 resolvedVaultId，佇列不用再用 vaultId 分桶。 */
-	syncQueue: SyncQueueItem[];
-	/**
-	 * 每個路徑目前已知的版本號，供下次要送出 MODIFY/DELETE 時當作
-	 * baseVersion；沒有記錄的路徑視為版本 0，交給伺服器的版本檢查擋掉。
-	 */
-	fileVersions: Record<string, number>;
-}
-
-export interface UploadObjectResponse {
-	contentHash: string;
-	status: 'CREATED' | 'ALREADY_EXISTS';
-}
-
-/** 對應後端 sync_events.entity_type。 */
-export type EntityType = 'VAULT' | 'FILE';
-
-export interface FilePayload {
-	contentHash: string | null;
-	isDeleted: boolean;
-}
-
-export interface PushCommand {
-	mutationId: string;
-	entityType: EntityType;
-	/** VAULT：要建立的 vaultId；FILE：所屬的 vaultId。全域佇列下每筆 command 得自帶。 */
-	vaultId: string;
-	entityId: string;
-	baseVersion: number;
-	payload: string;
-}
-
-export interface PushResult {
-	mutationId: string;
-	status: 'OK' | 'SKIPPED' | 'ERROR';
-	/**
-	 * entityType='VAULT' 且撞名（其實是同帳號另一台裝置已建立的既有 vault）時才會帶這個欄位，
-	 * 值是伺服器上真正的 vaultId（跟這台裝置送出去的候選 UUID 不同）。runSync 收到後要把
-	 * settings.resolvedVaultId 與佇列裡引用候選 id 的項目一併改寫成這個值。
-	 */
-	resolvedVaultId?: string;
-}
-
-export interface PullEvent {
-	id: number;
-	vaultId: string;
-	mutationId: string;
-	entityType: EntityType;
-	entityId: string;
-	version: number;
-	/** entityType='FILE' 時可解析成 FilePayload；null 視同刪除。entityType='VAULT' 不代表檔案內容變化，不解析。 */
-	payload: string | null;
-	createdAt: string;
-}
-
-export interface SyncRequestBody {
-	lastCursor: number;
-	pushCommands: PushCommand[];
-}
-
-export interface SyncResponseBody {
-	pushResults: PushResult[];
-	newCursor: number;
-	pullEvents: PullEvent[];
+	remoteManifest: VaultManifest;
+	lastPushedAt: string | null;
+	lastPulledAt: string | null;
 }

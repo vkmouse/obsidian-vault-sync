@@ -24,72 +24,19 @@ export interface AuthContext extends Record<string, unknown> {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Sync API (POST /api/sync) 契約型別                                         */
-/*                                                                            */
-/* plugin 端（obsidian-vault-sync-plugin/src/types.ts）也有一份形狀相同的    */
-/* 定義，兩邊各自獨立維護、不共用同一個檔案，避免後端改內部結構時意外連動   */
-/* 打斷前端。                                                                */
+/* Vault sync API 契約型別                                                    */
 /* -------------------------------------------------------------------------- */
 
-/** 對應 sync_events.entity_type。 */
-export type EntityType = 'VAULT' | 'FILE'
+export interface ResolveVaultRequestBody {
+  name: string
+  candidateId: string
+}
 
-export interface PushCommand {
-  mutationId: string
-  entityType: EntityType
-  /** VAULT：要建立的 vaultId；FILE：所屬的 vaultId。全域佇列下每筆 command 得自帶。 */
+export interface ResolveVaultResponseBody {
   vaultId: string
-  entityId: string
-  baseVersion: number
-  payload: string
 }
 
-export type PushResultStatus = 'OK' | 'SKIPPED' | 'ERROR'
-
-export interface PushResult {
-  mutationId: string
-  status: PushResultStatus
-  /**
-   * entityType='VAULT' 撞名時（其實是同帳號另一台裝置已建立的既有 vault，
-   * 見 vaultService.put 的 'joined' 分支）才會帶這個欄位：伺服器上真正的
-   * vaultId，跟 client 送出去的候選 UUID 不同。status 仍是 'OK'，不是 ERROR。
-   */
-  resolvedVaultId?: string
-}
-
-export interface SyncRequestBody {
-  /** 使用者層級的全域游標位置，尚未同步過為 0。 */
-  lastCursor: number
-  pushCommands: PushCommand[]
-}
-
-/** Pull 流程回傳的單一筆伺服器端事件，對應 sync_events 一列。 */
-export interface PullEvent {
-  id: number
-  vaultId: string
-  mutationId: string
-  entityType: EntityType
-  entityId: string
-  version: number
-  payload: string | null
-  createdAt: string
-}
-
-export interface SyncResponseBody {
-  pushResults: PushResult[]
-  /** 回應當下事件日誌的全域最大游標值。 */
-  newCursor: number
-  /** 這個使用者名下所有 vault、lastCursor 之後的新事件（已排除本次請求自己的 mutationId）。 */
-  pullEvents: PullEvent[]
-}
-
-/**
- * FILE 專用的寫入參數：vaultId 的歸屬權已在呼叫端驗證過，這裡不用重新檢查。
- */
-export interface PutEntityParams {
-  vaultId: string
-  entityId: string
-  baseVersion: number
-  mutationId: string
-  payloadJson: string
+export interface UploadBlobResponseBody {
+  status: 'OK'
+  uploadedAt: string
 }

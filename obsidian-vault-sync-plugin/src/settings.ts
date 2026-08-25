@@ -1,8 +1,7 @@
 import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type VaultSyncPlugin from './main';
 import type { PluginData } from './types';
-import { runSync } from './sync/syncRunner';
-import { DEBOUNCE_MS } from './sync/queue';
+import { ensureVaultResolved, VaultNotConfiguredError } from './sync/vaultResolve';
 
 export const DEFAULT_SETTINGS: PluginData = {
 	accessClientId: '',
@@ -11,15 +10,18 @@ export const DEFAULT_SETTINGS: PluginData = {
 	vaultName: '',
 	resolvedVaultId: null,
 	resolvedVaultName: null,
-	lastCursor: 0,
-	syncQueue: [],
-	fileVersions: {},
+	remoteManifest: [],
+	lastPushedAt: null,
+	lastPulledAt: null,
 };
 
 /** 需與後端的名稱長度限制一致，否則本地驗證通過但送出去仍會被拒。 */
 export function isValidVaultName(name: string): boolean {
 	return name.length >= 1 && name.length <= 100;
 }
+
+/** 改名文字停手多久後才觸發 resolve 確認提示，避免每個字都跳提示。 */
+const RENAME_DEBOUNCE_MS = 1500;
 
 export class VaultSyncSettingTab extends PluginSettingTab {
 	plugin: VaultSyncPlugin;
@@ -43,7 +45,6 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		}
 	}
 
-	/** 改名文字停手 DEBOUNCE_MS 後呼叫，沿用 queue.ts 檔案事件的同一個常數，跟其他 debounce 行為一致。 */
 	private scheduleRenameConfirm(): void {
 		if (this.renameDebounceHandle !== null) {
 			window.clearTimeout(this.renameDebounceHandle);
@@ -51,38 +52,52 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		this.renameDebounceHandle = window.setTimeout(() => {
 			this.renameDebounceHandle = null;
 			this.promptRenameConfirmIfChanged();
-		}, DEBOUNCE_MS);
+		}, RENAME_DEBOUNCE_MS);
 	}
 
 	/**
-	 * 名稱跟目前已綁定的 resolvedVaultName 不同才跳確認提示；相同（例如打完又改回去）就安靜結束，
-	 * 不打擾使用者。提示上的「確定」不會立刻套用變更，只有按下去才會真的產生新 vaultId、清空佇列並同步，
-	 * 讓打錯字或改到一半都不會誤觸資料清空。
+	 * 名稱跟目前已綁定的 resolvedVaultName 不同才跳確認提示；相同（例如打完又改回去）就安靜結束。
+	 * 按下「確定」只會呼叫 resolve API 換到新的 vaultId，不會自動 push/pull——
+	 * 同步觸發改成純手動之後，換 vaultId 跟真正同步是兩件事。
 	 */
 	private promptRenameConfirmIfChanged(): void {
 		const { settings } = this.plugin;
 		if (settings.vaultName === settings.resolvedVaultName) return;
 		if (!isValidVaultName(settings.vaultName)) return; // 防呆：理論上 onChange 已經擋掉非法值
 
-		// 快照這次要確認的名稱：如果使用者在按下「確定」之前又改了名稱（此時新的
-		// debounce 週期會另外跳一個新提示），這個舊提示按下去要能認出自己已經過期、
-		// 安靜略過，而不是套用一個使用者已經不要的舊名稱。
+		// 快照這次要確認的名稱：使用者若在按「確定」前又改了名稱，這個舊提示要能
+		// 認出自己已經過期、安靜略過，而不是套用一個使用者已經不要的舊名稱。
 		const targetName = settings.vaultName;
 
 		let notice: Notice;
 		const fragment = createFragment((el) => {
 			el.createSpan({
-				text: `Vault Sync：Vault 名稱已改為「${targetName}」，確定要套用並嘗試同步嗎？`,
+				text: `Vault Sync：Vault 名稱已改為「${targetName}」，確定要換成這個 vault 嗎？`,
 			});
 			el.createEl('br');
 			const button = el.createEl('button', { text: '確定', cls: 'vault-sync-notice-confirm-button' });
 			button.addEventListener('click', () => {
 				notice.hide();
 				if (this.plugin.settings.vaultName !== targetName) return; // 名稱在等待確認時又被改了，這個提示已過期
-				void runSync(this.plugin);
+				void this.resolveAndNotify();
 			});
 		});
 		notice = new Notice(fragment, 0); // duration=0：不自動消失，等使用者按下確定或自行關閉
+	}
+
+	private async resolveAndNotify(): Promise<void> {
+		try {
+			await ensureVaultResolved(this.plugin);
+			this.display();
+			new Notice(`Vault Sync：已綁定「${this.plugin.settings.resolvedVaultName}」，請自行 push 或 pull。`);
+		} catch (err) {
+			if (err instanceof VaultNotConfiguredError) {
+				new Notice('Vault Sync：請先填完 API base URL 與 Access 憑證。');
+			} else {
+				const message = err instanceof Error ? err.message : String(err);
+				new Notice(`Vault Sync：換 vault 失敗（${message}）。`);
+			}
+		}
 	}
 
 	display(): void {
@@ -132,7 +147,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Vault 名稱')
 			.setDesc(
-				'人類可讀的名稱（1–100 字元），用來在伺服器端換到真正的 vaultId。停止輸入後會跳出確認提示，按下確定才會真正套用並嘗試同步。',
+				'人類可讀的名稱（1–100 字元），用來在伺服器端換到真正的 vaultId。停止輸入後會跳出確認提示，按下確定才會真正換到新的 vault。',
 			)
 			.addText((text) =>
 				text
@@ -144,8 +159,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 							text.setValue(this.plugin.settings.vaultName);
 							return;
 						}
-						// 只存純文字，不動 resolvedVaultId／佇列；每個字都會觸發這裡，
-						// 真正的 resolve 邏輯放在下面的 debounce 之後才跑。
+						// 只存純文字，不動 resolvedVaultId；真正的 resolve 邏輯放在下面的 debounce 之後才跑。
 						this.plugin.settings.vaultName = value;
 						await this.plugin.saveSettings();
 						this.scheduleRenameConfirm();
@@ -159,5 +173,13 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					`${this.plugin.settings.resolvedVaultId}（對應名稱：${this.plugin.settings.resolvedVaultName ?? ''}）`,
 				);
 		}
+
+		new Setting(containerEl)
+			.setName('上次 push 時間')
+			.setDesc(this.plugin.settings.lastPushedAt ?? '尚未 push 過');
+
+		new Setting(containerEl)
+			.setName('上次 pull 時間')
+			.setDesc(this.plugin.settings.lastPulledAt ?? '尚未 pull 過');
 	}
 }
