@@ -37,37 +37,37 @@ async function buildPushCommands(
 	const commands: PushCommand[] = [];
 
 	for (const item of batch) {
-		if (item.isDeleted) {
+		if (item.payload.isDeleted) {
 			const payload: FilePayload = { contentHash: null, isDeleted: true };
 			commands.push({
 				mutationId: item.mutationId,
-				entityType: 'FILE',
-				entityId: item.path,
+				entityType: item.entityType,
+				entityId: item.entityId,
 				baseVersion: item.baseVersion,
 				payload: JSON.stringify(payload),
 			});
-			console.log(`[vault-sync] DELETE  ${item.path}（mutationId=${item.mutationId}）`);
+			console.log(`[vault-sync] DELETE  ${item.entityId}（mutationId=${item.mutationId}）`);
 			continue;
 		}
 
-		const path = normalizePath(item.path);
+		const path = normalizePath(item.entityId);
 		const file = vault.getAbstractFileByPath(path);
 		if (!(file instanceof TFile)) {
-			console.warn(`[vault-sync] 本地檔案 ${item.path} 已不存在，這次同步先略過它的上傳`);
+			console.warn(`[vault-sync] 本地檔案 ${item.entityId} 已不存在，這次同步先略過它的上傳`);
 			continue;
 		}
 
 		const content = await vault.readBinary(file);
 		const contentHash = await sha256Hex(content);
 		console.log(
-			`[vault-sync] 上傳中 ${item.path}（${content.byteLength} bytes，hash=${contentHash.slice(0, 8)}…）`,
+			`[vault-sync] 上傳中 ${item.entityId}（${content.byteLength} bytes，hash=${contentHash.slice(0, 8)}…）`,
 		);
 		await uploadObject(creds, vaultId, contentHash, content);
 		const payload: FilePayload = { contentHash, isDeleted: false };
 		commands.push({
 			mutationId: item.mutationId,
-			entityType: 'FILE',
-			entityId: item.path,
+			entityType: item.entityType,
+			entityId: item.entityId,
 			baseVersion: item.baseVersion,
 			payload: JSON.stringify(payload),
 		});
@@ -180,24 +180,24 @@ async function applyBatchResponse(
 		if (result.status === 'OK') {
 			ok++;
 			removedMutationIds.add(result.mutationId);
-			console.log(`[vault-sync] OK       ${entry.path}（mutationId=${result.mutationId}）`);
-			if (entry.isDeleted) {
-				delete state.fileVersions[entry.path];
+			console.log(`[vault-sync] OK       ${entry.entityId}（mutationId=${result.mutationId}）`);
+			if (entry.payload.isDeleted) {
+				delete state.fileVersions[entry.entityId];
 			} else {
 				// 樂觀更新：對齊伺服器端 baseVersion+1 的版本號算法。
-				state.fileVersions[entry.path] = entry.baseVersion + 1;
+				state.fileVersions[entry.entityId] = entry.baseVersion + 1;
 			}
 		} else if (result.status === 'SKIPPED') {
 			skipped++;
 			removedMutationIds.add(result.mutationId);
-			console.log(`[vault-sync] SKIPPED  ${entry.path}（mutationId=${result.mutationId}）`);
+			console.log(`[vault-sync] SKIPPED  ${entry.entityId}（mutationId=${result.mutationId}）`);
 		} else {
 			error++;
-			console.warn(`[vault-sync] ERROR    ${entry.path}（mutationId=${result.mutationId}）`);
-			if (pullPaths.has(normalizePath(entry.path))) {
+			console.warn(`[vault-sync] ERROR    ${entry.entityId}（mutationId=${result.mutationId}）`);
+			if (pullPaths.has(normalizePath(entry.entityId))) {
 				removedMutationIds.add(result.mutationId);
 			} else {
-				erroredPaths.push(entry.path);
+				erroredPaths.push(entry.entityId);
 			}
 		}
 	}
@@ -205,7 +205,7 @@ async function applyBatchResponse(
 	state.syncQueue = state.syncQueue.filter((item) => {
 		if (removedMutationIds.has(item.mutationId)) return false;
 		// 防呆：即使不在這一批 pushResults 裡，只要路徑被本次 pull 覆蓋就清掉殘留列。
-		if (pullPaths.has(normalizePath(item.path))) return false;
+		if (pullPaths.has(normalizePath(item.entityId))) return false;
 		return true;
 	});
 
@@ -242,8 +242,9 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 	let batchNo = 0;
 	for (;;) {
 		batchNo++;
-		const sorted = [...state.syncQueue].sort((a, b) => a.updatedAt - b.updatedAt);
-		const batch = sorted.slice(0, BATCH_SIZE);
+		// 出列順序即陣列順序：合併同一個 entityId 的後續事件是 in-place 更新，
+		// 不會把項目搬到佇列尾端，陣列順序本身就是先進先出。
+		const batch = state.syncQueue.slice(0, BATCH_SIZE);
 		const isFullBatch = batch.length === BATCH_SIZE;
 
 		if (batch.length === 0) {

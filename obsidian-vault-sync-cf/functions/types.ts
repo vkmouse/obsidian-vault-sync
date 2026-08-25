@@ -38,9 +38,7 @@ export interface PushCommand {
   mutationId: string
   entityType: EntityType
   entityId: string
-  /** 這筆變更基於哪個版本做的；新建固定為 0。 */
   baseVersion: number
-  /** JSON 字串，內容依 entityType 而定。 */
   payload: string
 }
 

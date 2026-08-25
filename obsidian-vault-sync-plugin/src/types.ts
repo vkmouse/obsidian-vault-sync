@@ -1,22 +1,22 @@
 /**
  * 本地待推送佇列的一列。
  *
- * 用 isDeleted 布林值而不是 CREATE/MODIFY/DELETE 三態：伺服器端只看
- * baseVersion===0 決定 insert/update，只看 payload.isDeleted 決定內容是否
- * 視為刪除，CREATE 跟 MODIFY 對它來說是同一件事，本地沒必要維持這個區分。
- *
  * 取捨：還沒送出去的檔案被刪除時不會整列移除，而是照常標成 isDeleted=true
  * 送出去。換來合併邏輯簡化，代價是這類「建立後秒刪」的檔案會多打一次
  * API、在伺服器留一筆刪除記錄，這個成本可以接受。
+ *
+ * 出列順序採陣列本身順序（先進先出）：合併同一個 entityId 的後續事件是
+ * in-place 更新、不會把項目搬到佇列尾端，所以本來就不需要額外時間戳來
+ * 排序。
  */
 export interface SyncQueueItem {
-	path: string;
+	entityType: 'FILE';
+	entityId: string;
 	mutationId: string;
-	isDeleted: boolean;
-	/** 樂觀鎖版本號；只在第一次進佇列時決定，之後不再重新計算。 */
 	baseVersion: number;
-	/** epoch ms，每次合併時重新寫入，決定推送順序（越舊越先送）。 */
-	updatedAt: number;
+	payload: {
+		isDeleted: boolean;
+	};
 }
 
 /**
@@ -71,7 +71,6 @@ export interface PushCommand {
 	entityType: EntityType;
 	entityId: string;
 	baseVersion: number;
-	/** 序列化後的 FilePayload；用字串保留欄位形狀讓不同 entityType 可以各自定義 payload。 */
 	payload: string;
 }
 

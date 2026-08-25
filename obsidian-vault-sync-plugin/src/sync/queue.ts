@@ -8,35 +8,31 @@ export type RawEventKind = 'create' | 'modify' | 'delete';
 /**
  * 把一個新事件合併進 state.syncQueue。
  *
- * 用 isDeleted 布林值而不是 CREATE/MODIFY/DELETE：伺服器只看 baseVersion===0
- * 決定 insert/update，只看 payload.isDeleted 決定是否視為刪除，CREATE 跟
- * MODIFY 對它來說是同一件事。baseVersion 只在第一次進佇列時決定，之後不再
- * 重新計算——佇列項目還沒送出去之前，fileVersions 不會變動。
+ * baseVersion 只在第一次進佇列時決定，之後不再重新計算——佇列項目還沒送
+ * 出去之前，fileVersions 不會變動。
  *
  * 還沒送出去的檔案被刪除時不會整列移除，而是照常標成 isDeleted 送出去；
  * 換來合併邏輯簡單，代價是這類檔案會多打一次 API、留一筆可接受的刪除記錄。
  */
 export function mergeQueueItem(state: VaultLocalState, path: string, kind: RawEventKind): void {
 	const queue = state.syncQueue;
-	const idx = queue.findIndex((item) => item.path === path);
-	const now = Date.now();
+	const idx = queue.findIndex((item) => item.entityId === path);
 	const isDeleted = kind === 'delete';
 
 	if (idx === -1) {
 		const knownVersion = state.fileVersions[path] ?? 0;
 		queue.push({
-			path,
+			entityType: 'FILE',
+			entityId: path,
 			mutationId: crypto.randomUUID(),
-			isDeleted,
 			baseVersion: kind === 'create' ? 0 : knownVersion,
-			updatedAt: now,
+			payload: { isDeleted },
 		});
 		return;
 	}
 
 	const existing = queue[idx]!;
-	existing.isDeleted = isDeleted;
-	existing.updatedAt = now;
+	existing.payload.isDeleted = isDeleted;
 	existing.mutationId = crypto.randomUUID();
 }
 
