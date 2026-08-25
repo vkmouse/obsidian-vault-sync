@@ -78,8 +78,7 @@ export interface SyncResponseBody {
 }
 
 /**
- * FILE 專用的寫入參數：vaultId 到這裡已經通過 sync.ts 的 vaultWritable
- * 檢查，fileService 不用重新驗證歸屬權。
+ * FILE 專用的寫入參數：vaultId 的歸屬權已在呼叫端驗證過，這裡不用重新檢查。
  */
 export interface PutEntityParams {
   vaultId: string

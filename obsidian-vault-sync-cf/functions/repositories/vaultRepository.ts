@@ -28,10 +28,7 @@ export async function insert(
     .first<VaultRow>()
 }
 
-/**
- * 一次 batch 查出這批 vaultId 目前的 owner，供 sync.ts 初始化
- * vaultWritable map；查無此列的 vaultId 不會出現在回傳的 Map 裡。
- */
+/** 一次 batch 查出這批 vaultId 目前的 owner；查無此列的 vaultId 不會出現在回傳的 Map 裡。 */
 export async function findOwnersByIds(
   db: D1Database,
   vaultIds: string[],

@@ -1,7 +1,6 @@
 /**
  * 本地待推送佇列的一列。entityType 用 discriminated union 區分 VAULT／FILE，
- * 兩者的 payload 形狀不同，靠這個 union 讓 buildPushCommands／mergeQueueItem
- * 能在編譯期擋掉互相誤用。
+ * 兩者的 payload 形狀不同，靠這個 union 在編譯期擋掉互相誤用。
  *
  * 取捨：還沒送出去的檔案被刪除時不會整列移除，而是照常標成 isDeleted=true
  * 送出去。換來合併邏輯簡化，代價是這類「建立後秒刪」的檔案會多打一次
