@@ -43,14 +43,9 @@ export default class VaultSyncPlugin extends Plugin {
 	}
 
 	/**
-	 * 監聽 create/modify/delete/rename，交給 SyncQueueManager 處理 debounce。
-	 *
-	 * `!this.app.workspace.layoutReady` 這個判斷是為了迴避 Obsidian 一個廣為人知的
-	 * 行為：plugin 剛載入、vault 索引重建時，會對「所有既有檔案」各觸發一次 `create`
-	 * 事件，不是真的新檔案。跳過這些事件，避免把整個 vault 誤判成待推送的新增。這只是
-	 * 避免誤觸發的技術性防呆，不等於解決了 Client-規格書第 9 節「首次安裝 plugin 時
-	 * 的初始化流程」——那個問題仍未定案：本實作在第一次成功解析出 vaultId 之前，
-	 * 對檔案的變更一律不會被追蹤進佇列（見 sync/queue.ts 的說明）。
+	 * plugin 剛載入、vault 索引重建時，Obsidian 會對所有既有檔案各觸發一次
+	 * create 事件，不是真的新檔案；用 layoutReady 篩掉這些事件，避免把整個
+	 * vault 誤判成待推送的新增。
 	 */
 	private registerVaultEvents(): void {
 		const isTrackable = (file: TAbstractFile): file is TFile =>

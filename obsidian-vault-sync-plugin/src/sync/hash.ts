@@ -1,7 +1,4 @@
-/**
- * Client-規格書第 7 節：contentHash 一律是 SHA-256、小寫十六進位字串、固定 64 字元。
- * 見第 8.1 節：用 `crypto.subtle.digest('SHA-256', ...)` 取得 digest 後轉為 hex。
- */
+/** 回傳小寫十六進位字串，需與後端 content_hash 欄位的格式驗證一致。 */
 export async function sha256Hex(data: ArrayBuffer): Promise<string> {
 	const digest = await crypto.subtle.digest('SHA-256', data);
 	const bytes = new Uint8Array(digest);

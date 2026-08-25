@@ -22,11 +22,7 @@ export class SyncApiError extends Error {
 	}
 }
 
-/**
- * `POST /api/vaults/{vaultId}/sync` 收到「vault 不屬於你」的 403。
- * 理論上不會發生（見 Client-規格書第 5 節），但若真的發生，代表本地快取的
- * `resolvedVaultId` 已經失效，呼叫端要清空快取並中止本次同步（見第 9.2 節決議）。
- */
+/** 收到「vault 不屬於你」的 403；代表本地快取的 vaultId 已經失效。 */
 export class VaultForbiddenError extends Error {
 	constructor() {
 		super('這個 vaultId 不屬於目前的帳號');
@@ -41,7 +37,6 @@ function authHeaders(creds: ApiCredentials): Record<string, string> {
 	};
 }
 
-/** 7.0 建立 / 解析 vault：POST /api/vaults */
 export async function createOrResolveVault(
 	creds: ApiCredentials,
 	name: string,
@@ -59,7 +54,6 @@ export async function createOrResolveVault(
 	return res.json as CreateVaultResponse;
 }
 
-/** 7.1 上傳內容：PUT /api/vaults/{vaultId}/objects/{contentHash} */
 export async function uploadObject(
 	creds: ApiCredentials,
 	vaultId: string,
@@ -82,10 +76,7 @@ export async function uploadObject(
 	return res.json as UploadObjectResponse;
 }
 
-/**
- * 7.2 下載內容：GET /api/vaults/{vaultId}/objects/{contentHash}
- * 回傳 `null` 代表 404（內容不存在）。
- */
+/** 回傳 null 代表 404（內容不存在），跟其他錯誤狀態區分開。 */
 export async function downloadObject(
 	creds: ApiCredentials,
 	vaultId: string,
@@ -109,7 +100,6 @@ export async function downloadObject(
 	return res.arrayBuffer;
 }
 
-/** 7.3 推送 metadata + 拉取事件：POST /api/vaults/{vaultId}/sync */
 export async function postSync(
 	creds: ApiCredentials,
 	vaultId: string,

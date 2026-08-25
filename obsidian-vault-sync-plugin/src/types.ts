@@ -1,30 +1,29 @@
-// 對應 Client-規格書第 1、2 節的本地儲存結構，以及第 7 節的 API request/response 形狀。
-
-/** 本地佇列合併規則用的概念；不是 wire 協定的一部分。 */
-export type SyncAction = 'CREATE' | 'MODIFY' | 'DELETE';
-
-/** 本地待推送佇列的一列，見 Client-規格書第 2 節。 */
+/**
+ * 本地待推送佇列的一列。
+ *
+ * 用 isDeleted 布林值而不是 CREATE/MODIFY/DELETE 三態：伺服器端只看
+ * baseVersion===0 決定 insert/update，只看 payload.isDeleted 決定內容是否
+ * 視為刪除，CREATE 跟 MODIFY 對它來說是同一件事，本地沒必要維持這個區分。
+ *
+ * 取捨：還沒送出去的檔案被刪除時不會整列移除，而是照常標成 isDeleted=true
+ * 送出去。換來合併邏輯簡化，代價是這類「建立後秒刪」的檔案會多打一次
+ * API、在伺服器留一筆刪除記錄，這個成本可以接受。
+ */
 export interface SyncQueueItem {
 	path: string;
 	mutationId: string;
-	action: SyncAction;
+	isDeleted: boolean;
+	/** 樂觀鎖版本號；只在第一次進佇列時決定，之後不再重新計算。 */
 	baseVersion: number;
-	/** epoch ms，每次合併更新時重新寫入，決定推送順序（越舊越先送）。 */
+	/** epoch ms，每次合併時重新寫入，決定推送順序（越舊越先送）。 */
 	updatedAt: number;
 }
 
 /**
- * 每個 vaultId 各自獨立保存的本地狀態，見 Client-規格書第 1 節。
+ * 每個 vaultId 各自獨立保存的本地狀態。
  *
- * `fileVersions` 是規格書沒有明講、但實作時必須補上的欄位：第 4 節合併規則
- * 提到「（無）| MODIFY | 新增一列，baseVersion=目前已知版本」，但規格書的
- * `VaultLocalState` 只有 `lastCursor`/`syncQueue`，沒有地方存「目前已知版本」。
- * 這裡比照 cimg-rs/JaNote 的作法：push 收到 `OK` 時本地樂觀地把該路徑版本更新為
- * `baseVersion + 1`（`DELETE` 則移除該路徑的紀錄）；套用 `pullEvents` 時直接採用
- * 事件裡的 `version`。沒有紀錄的路徑，`MODIFY`/`DELETE` 時 `baseVersion` 一律視為
- * 0（等同不知道版本），讓伺服器用版本檢查自然擋掉（結果會是 `SKIPPED`，不影響
- * 正確性，只是這筆變更需要等下次同步才會被伺服器接受版本已知的重送或使用者手動
- * 再次觸發同步）。
+ * fileVersions 記錄每個路徑目前已知的版本號，供下次要送出 MODIFY/DELETE 時
+ * 當作 baseVersion；沒有記錄的路徑視為版本 0，交給伺服器的版本檢查擋掉。
  */
 export interface VaultLocalState {
 	lastCursor: number;
@@ -32,7 +31,7 @@ export interface VaultLocalState {
 	fileVersions: Record<string, number>;
 }
 
-/** plugin `data.json` 的頂層結構，見 Client-規格書第 1 節。 */
+/** 序列化進 Obsidian 的 data.json，是整個 plugin 唯一持久化的狀態。 */
 export interface PluginData {
 	accessClientId: string;
 	accessClientSecret: string;
@@ -47,8 +46,6 @@ export interface PluginData {
 export function createEmptyVaultLocalState(): VaultLocalState {
 	return { lastCursor: 0, syncQueue: [], fileVersions: {} };
 }
-
-// ---- API DTOs（見 Client-規格書第 7 節，欄位命名與後端 API-規格書一致） ----
 
 export interface CreateVaultResponse {
 	vaultId: string;
@@ -74,7 +71,7 @@ export interface PushCommand {
 	entityType: EntityType;
 	entityId: string;
 	baseVersion: number;
-	/** JSON.stringify(FilePayload)。 */
+	/** 序列化後的 FilePayload；用字串保留欄位形狀讓不同 entityType 可以各自定義 payload。 */
 	payload: string;
 }
 

@@ -12,7 +12,7 @@ export const DEFAULT_SETTINGS: PluginData = {
 	vaults: {},
 };
 
-/** Client-規格書第 5 節第 0 步：vaultName 長度限制 1–100 字元（`.length`）。 */
+/** 需與後端的名稱長度限制一致，否則本地驗證通過但送出去仍會被拒。 */
 export function isValidVaultName(name: string): boolean {
 	return name.length >= 1 && name.length <= 100;
 }
@@ -77,7 +77,6 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 					.setPlaceholder('例如：work、我的筆記')
 					.setValue(this.plugin.settings.vaultName)
 					.onChange(async (value) => {
-						// 第 5 節第 0 步：即時檢查長度，超出範圍時不允許儲存這次輸入。
 						if (!isValidVaultName(value)) {
 							new Notice('Vault 名稱長度必須介於 1 到 100 字元之間，未儲存這次修改。');
 							text.setValue(this.plugin.settings.vaultName);

@@ -11,7 +11,7 @@ import {
 import { sha256Hex } from './hash';
 import type { FilePayload, PullEvent, PushCommand, SyncQueueItem, SyncResponseBody } from '../types';
 
-/** Client-規格書第 8.2 節：每批最多取佇列裡最舊的 50 筆。 */
+/** 每批最多取佇列裡最舊的 50 筆，避免單次請求過大。 */
 const BATCH_SIZE = 50;
 
 function describeError(err: unknown): string {
@@ -19,16 +19,13 @@ function describeError(err: unknown): string {
 }
 
 /**
- * 讀檔、算 hash、上傳內容（第 8.1 節），並組出這一批的 `PushCommand[]`（第 8.2 節）。
+ * 讀檔、算 hash、上傳內容，組出這一批的 PushCommand[]。
  *
- * 若批次中某個 `action = CREATE/MODIFY` 的檔案在本地已經找不到了（debounce 結束後、
- * 真正同步前又被刪除，理論上少見），略過這筆上傳、也不放進 `pushCommands`；它會繼續
- * 留在佇列裡，等下一次相關的 vault 事件（多半是 DELETE）把它合併成正確的動作。
- * 這個情境規格書沒有明講，屬於實作補充。
+ * 若某個非刪除項目在本地已經找不到檔案（debounce 結束後、真正同步前又被
+ * 刪除），略過它的上傳，留在佇列裡等下一次相關事件把它合併成正確狀態。
  *
- * 上傳過程中若真正的 API 呼叫失敗（網路、伺服器錯誤等），直接把例外往外丟，交給
- * `runSync` 中止整批同步——已經上傳成功的內容是安全的（見規格書第 9 節：內容上傳
- * 成功但 metadata 沒送出時，下次同步重新走 8.1～8.2 即可安全恢復）。
+ * 上傳過程中若 API 呼叫失敗，直接把例外往外丟中止整批同步；已經上傳成功的
+ * 內容是安全的，下次同步重新走一次即可恢復。
  */
 async function buildPushCommands(
 	plugin: VaultSyncPlugin,
@@ -40,7 +37,7 @@ async function buildPushCommands(
 	const commands: PushCommand[] = [];
 
 	for (const item of batch) {
-		if (item.action === 'DELETE') {
+		if (item.isDeleted) {
 			const payload: FilePayload = { contentHash: null, isDeleted: true };
 			commands.push({
 				mutationId: item.mutationId,
@@ -63,7 +60,7 @@ async function buildPushCommands(
 		const content = await vault.readBinary(file);
 		const contentHash = await sha256Hex(content);
 		console.log(
-			`[vault-sync] 上傳中 ${item.action} ${item.path}（${content.byteLength} bytes，hash=${contentHash.slice(0, 8)}…）`,
+			`[vault-sync] 上傳中 ${item.path}（${content.byteLength} bytes，hash=${contentHash.slice(0, 8)}…）`,
 		);
 		await uploadObject(creds, vaultId, contentHash, content);
 		const payload: FilePayload = { contentHash, isDeleted: false };
@@ -80,7 +77,6 @@ async function buildPushCommands(
 	return commands;
 }
 
-/** Client-規格書第 8.4 節：依序套用 pullEvents。 */
 async function applyPullEvent(
 	plugin: VaultSyncPlugin,
 	creds: ApiCredentials,
@@ -132,10 +128,6 @@ async function applyPullEvent(
 	console.log(`[vault-sync] pull 完成，已新增檔案 ${path}`);
 }
 
-/**
- * 處理單一批次收到的 `SyncResponseBody`：套用 pullEvents、依第 8.3 節與第 9.1 節
- * 決議處理 pushResults，並清理本地佇列與版本快取。回傳這一批的統計數字。
- */
 async function applyBatchResponse(
 	plugin: VaultSyncPlugin,
 	creds: ApiCredentials,
@@ -146,7 +138,7 @@ async function applyBatchResponse(
 	const state = plugin.getOrCreateVaultState(vaultId);
 	const mutationMap = new Map(batch.map((item) => [item.mutationId, item]));
 
-	// 8.4 套用 pullEvents，同時記錄這次被覆蓋到的路徑，供下面第 9.1 節決議使用。
+	// 記錄本次被 pull 覆蓋到的路徑，供下面判斷 ERROR 要不要保留使用。
 	const pullPaths = new Set<string>();
 	let pulled = 0;
 	if (response.pullEvents.length === 0) {
@@ -170,12 +162,11 @@ async function applyBatchResponse(
 		}
 	}
 
-	// 8.5：套用完 pullEvents 後才寫回 lastCursor。
+	// 必須等 pullEvents 全部套用完才寫回，避免中途失敗時把還沒套用的事件當作已處理。
 	state.lastCursor = response.newCursor;
 
-	// 8.3 + 第 9.1 節決議：OK/SKIPPED 移除該列；ERROR 時，若這個路徑剛好被本次
-	// pullEvents 覆蓋掉，代表本地檔案已經被伺服器端的版本蓋過，一併清除、不用管；
-	// 其餘 ERROR 保留在佇列裡等下次同步重試，並在最後彙整成 Notice 提示使用者。
+	// OK/SKIPPED 移除該列；ERROR 但路徑剛好被本次 pull 覆蓋掉的話，代表本地已經
+	// 被伺服器版本蓋過，一併清除；其餘 ERROR 留在佇列裡等下次同步重試。
 	let ok = 0;
 	let skipped = 0;
 	let error = 0;
@@ -190,11 +181,10 @@ async function applyBatchResponse(
 			ok++;
 			removedMutationIds.add(result.mutationId);
 			console.log(`[vault-sync] OK       ${entry.path}（mutationId=${result.mutationId}）`);
-			if (entry.action === 'DELETE') {
+			if (entry.isDeleted) {
 				delete state.fileVersions[entry.path];
 			} else {
-				// 本地樂觀更新：與伺服器 baseVersion+1 的算法對齊（見 types.ts 對
-				// fileVersions 的說明）。
+				// 樂觀更新：對齊伺服器端 baseVersion+1 的版本號算法。
 				state.fileVersions[entry.path] = entry.baseVersion + 1;
 			}
 		} else if (result.status === 'SKIPPED') {
@@ -222,10 +212,8 @@ async function applyBatchResponse(
 	return { ok, skipped, error, pulled, erroredPaths };
 }
 
-/** Client-規格書第 6～8 節：手動觸發同步的完整流程。 */
 export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 	console.log('[vault-sync] === 開始同步 ===');
-	// 第 6 節：處理流程開始前，先強制結束所有還在計時中的 debounce。
 	plugin.queueManager.flushAll();
 
 	let vaultId: string;
@@ -286,7 +274,7 @@ export async function runSync(plugin: VaultSyncPlugin): Promise<void> {
 			);
 		} catch (err) {
 			if (err instanceof VaultForbiddenError) {
-				// 第 9.2 節決議：清空本地快取的 vaultId 綁定，強制下次走第 5 節重新解析。
+				// 清空快取的 vaultId 綁定，強制下次重新向伺服器解析。
 				plugin.settings.resolvedVaultId = null;
 				plugin.settings.resolvedVaultName = null;
 				await plugin.saveSettings();
